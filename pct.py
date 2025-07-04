@@ -28,7 +28,7 @@ class Dataloader():
         self.path = path
 
     def load(self, ext='.csv'):
-        """Load data organised in a dataset/experiment/measurement/repetition
+        """Load photon correlation spectroscopy data organised in a dataset/experiment/measurement/repetition
         hierarchy.
 
         Parameters
@@ -99,4 +99,3 @@ class Dataloader():
             data.experiments[experiment] = experiment_dict
 
         return data
-
