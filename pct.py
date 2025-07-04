@@ -27,7 +27,18 @@ class Dataloader():
         """
         self.path = path
 
-    def load(self, ext='.csv'):
+
+    def remove_trailing_comma(self, filepath):
+        with open(filepath, 'r+', encoding='utf-8') as file:
+            lines = file.readlines()
+            if lines[-1].rstrip().endswith(','):
+                lines[-1] = lines[-1].rstrip().rstrip(',') + '\n'
+                file.seek(0)
+                file.writelines(lines)
+                file.truncate()
+
+
+    def load(self, ext='.csv', delimiter=','):
         """Load photon correlation spectroscopy data organised in a dataset/experiment/measurement/repetition
         hierarchy.
 
@@ -79,6 +90,7 @@ class Dataloader():
 
                 # load measurement summary
                 summary_path = os.path.join(meas_path, "Summary.csv")
+                self.remove_trailing_comma(summary_path)
                 summary_df = pd.read_csv(summary_path) if os.path.exists(summary_path) else None
 
                 measurement_dict = {"summary": summary_df, "repetitions": {}}
