@@ -97,17 +97,43 @@ class Dataloader():
 
                 # iterate through repetition folders
                 for repetition in sorted(os.listdir(meas_path)):
-                    rep_path = os.path.join(meas_path, repetition)
-                    if not os.path.isdir(rep_path):
-                        continue
-
-                    ct_path = os.path.join(rep_path, "Count Trace.csv")
-                    if os.path.exists(ct_path):
-                        ct_df = pd.read_csv(ct_path)
+                    if repetition == "Count Trace.csv":
+                        rep_path = os.path.join(meas_path, repetition)
+                        ct_df = pd.read_csv(rep_path, skiprows=2)
                         measurement_dict["repetitions"][repetition] = ct_df
 
+                    if repetition == "Correlation Function.csv":
+                        rep_path = os.path.join(meas_path, repetition)
+                        ct_df = pd.read_csv(rep_path, skiprows=2)
+                        measurement_dict["repetitions"][repetition] = ct_df
+                
                 experiment_dict["measurements"][meas_num] = measurement_dict
-
             data.experiments[experiment] = experiment_dict
 
         return data
+    
+
+    class Analyzer():
+        """
+        """
+        
+        def __init__(self):
+            """
+            """
+
+
+        def g20(self, tau, g2, g2err, q):
+            """ fit """
+            
+        
+        def analyze(self, data):
+            """
+            Analyze the loaded data.
+
+            Parameters
+            ----------
+            data : Data
+                The structured data object containing experiments, measurements, and repetitions.
+            """
+            # Example analysis: Calculate mean and standard deviation of each measurement's summary
+            
