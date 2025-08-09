@@ -87,13 +87,7 @@ class Dataloader():
                 # parse measurement number from folder name
                 match = re.search(r"(\d+)", measurement)
                 meas_num = int(match.group(1)) if match else measurement
-
-                # load measurement summary
-                summary_path = os.path.join(meas_path, "Summary.csv")
-                self.remove_trailing_comma(summary_path)
-                summary_df = pd.read_csv(summary_path) if os.path.exists(summary_path) else None
-
-                measurement_dict = {"summary": summary_df, "repetitions": {}}
+                measurement_dict = {"summary": {}, "repetitions": {}}
 
                 # iterate through repetition folders
                 for repetition in sorted(os.listdir(meas_path)):
@@ -105,6 +99,11 @@ class Dataloader():
                     if repetition == "Correlation Function.csv":
                         rep_path = os.path.join(meas_path, repetition)
                         ct_df = pd.read_csv(rep_path, skiprows=2)
+                        measurement_dict["repetitions"][repetition] = ct_df
+
+                    if repetition == "CORENN Gamma Results.csv":
+                        rep_path = os.path.join(meas_path, repetition)
+                        ct_df = pd.read_csv(rep_path, skiprows=5)
                         measurement_dict["repetitions"][repetition] = ct_df
                 
                 experiment_dict["measurements"][meas_num] = measurement_dict

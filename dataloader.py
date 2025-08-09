@@ -17,10 +17,13 @@ def load_dataset(root_path: str, extension: str = ".csv") -> Dict[str, Dict[str,
     Returns
     -------
     dict
-        Nested dictionary mapping sample -> experiment -> measurement -> repetition.
-        Each repetition is loaded as a :class:`pandas.DataFrame` with experiment level
-        data stored under the key ``"info"`` and measurement summaries stored under
-        ``"summary"``.
+        Nested dictionary mapping ``sample -> experiment -> measurement`` where
+        each measurement contains separate dictionaries for the file types
+        ``CORENN Gamma results.csv``, ``Correlation Function.csv`` and
+        ``Count Trace.csv``.  Within each file type dictionary the repetitions
+        are loaded as :class:`pandas.DataFrame` instances.  Experiment level
+        information is stored under the key ``"info"`` and measurement summaries
+        are stored under ``"summary"``.
     """
     dataset: Dict[str, Dict[str, Any]] = {}
 
@@ -51,7 +54,12 @@ def load_dataset(root_path: str, extension: str = ".csv") -> Dict[str, Dict[str,
                 if not os.path.isdir(meas_path):
                     continue
 
-                meas_dict: Dict[str, Any] = {"summary": None, "repetitions": {}}
+                meas_dict: Dict[str, Any] = {
+                    "summary": None,
+                    "gamma_results": {},
+                    "correlation_function": {},
+                    "count_trace": {},
+                }
                 summary_path = os.path.join(meas_path, f"Summary{extension}")
                 if os.path.exists(summary_path):
                     try:
@@ -59,14 +67,25 @@ def load_dataset(root_path: str, extension: str = ".csv") -> Dict[str, Dict[str,
                     except Exception:
                         meas_dict["summary"] = None
 
+                file_types = {
+                    f"CORENN Gamma results{extension}": "gamma_results",
+                    f"Correlation Function{extension}": "correlation_function",
+                    f"Count Trace{extension}": "count_trace",
+                }
+
                 for rep_file in sorted(os.listdir(meas_path)):
                     if rep_file == f"Summary{extension}" or not rep_file.endswith(extension):
                         continue
+
                     rep_path = os.path.join(meas_path, rep_file)
-                    try:
-                        meas_dict["repetitions"][rep_file] = pd.read_csv(rep_path)
-                    except Exception:
-                        meas_dict["repetitions"][rep_file] = None
+                    for suffix, key in file_types.items():
+                        if rep_file.endswith(suffix):
+                            rep_name = rep_file[: -len(suffix)].rstrip(" -_") or rep_file
+                            try:
+                                meas_dict[key][rep_name] = pd.read_csv(rep_path)
+                            except Exception:
+                                meas_dict[key][rep_name] = None
+                            break
 
                 exp_dict["measurements"][measurement] = meas_dict
 
