@@ -11,9 +11,12 @@ import pywt
 
 try:
     from scipy.interpolate import BSpline
+    from scipy.optimize import least_squares, nnls
     from scipy.special import gammaln
 except ImportError:  # pragma: no cover
     BSpline = None
+    least_squares = None
+    nnls = None
     gammaln = None
 
 k_BOLTZMANN = 1.380649e-23  # J/K
@@ -54,6 +57,7 @@ def _build_bspline_basis(
     r_grid: np.ndarray,
     n_basis: int,
     degree: int = 3,
+    log_space: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if BSpline is None:
         raise ImportError("scipy is required for B-spline basis construction.")
@@ -62,7 +66,8 @@ def _build_bspline_basis(
     if n_basis < degree + 1:
         raise ValueError("n_basis must be at least degree + 1.")
 
-    knot_min, knot_max = r_grid[0], r_grid[-1]
+    basis_grid = np.log(r_grid) if log_space else r_grid
+    knot_min, knot_max = basis_grid[0], basis_grid[-1]
     interior = np.linspace(knot_min, knot_max, n_basis - degree + 1)
     knots = np.concatenate(
         [np.full(degree, knot_min), interior, np.full(degree, knot_max)]
@@ -74,8 +79,8 @@ def _build_bspline_basis(
         coeffs = np.zeros(n_basis)
         coeffs[i] = 1.0
         spline = BSpline(knots, coeffs, degree, extrapolate=False)
-        Phi.append(np.nan_to_num(spline(r_grid), nan=0.0))
-        Phi_dd.append(np.nan_to_num(spline(r_grid, nu=2), nan=0.0))
+        Phi.append(np.nan_to_num(spline(basis_grid), nan=0.0))
+        Phi_dd.append(np.nan_to_num(spline(basis_grid, nu=2), nan=0.0))
 
     return np.column_stack(Phi), np.column_stack(Phi_dd), knots
 
@@ -88,6 +93,99 @@ def _build_kernel_for_gamma(
     tau = np.asarray(tau, dtype=float)
     rates = np.exp(-np.outer(tau, gamma_values))
     return rates @ weighted_basis
+
+
+def _build_kernel_for_dataset(
+    q_si: float,
+    tau: np.ndarray,
+    diffusion: np.ndarray,
+    weighted_basis: np.ndarray,
+) -> np.ndarray:
+    """Return the field-correlation kernel for one q and lag grid.
+
+    Parameters use SI units: ``q_si`` in 1/m, ``diffusion`` in m^2/s, and
+    ``tau`` in seconds. The returned matrix maps PSD basis coefficients to
+    the normalized field correlation before the Siegert square.
+    """
+    gamma_values = (float(q_si) ** 2) * np.asarray(diffusion, dtype=float)
+    return _build_kernel_for_gamma(tau, gamma_values, weighted_basis)
+
+
+def _second_difference_operator(n: int) -> np.ndarray:
+    if n < 3:
+        raise ValueError("At least three coefficients are required.")
+    D = np.zeros((n - 2, n), dtype=float)
+    for i in range(n - 2):
+        D[i, i] = 1.0
+        D[i, i + 1] = -2.0
+        D[i, i + 2] = 1.0
+    return D
+
+
+def _sphere_form_factor(q_si: float, r_grid: np.ndarray) -> np.ndarray:
+    """Rayleigh-Gans-Debye sphere form factor with the qR -> 0 limit."""
+    x = float(q_si) * np.asarray(r_grid, dtype=float)
+    form = np.ones_like(x)
+    mask = np.abs(x) > 1e-8
+    xm = x[mask]
+    form[mask] = (3.0 * (np.sin(xm) - xm * np.cos(xm)) / (xm**3)) ** 2
+    return form
+
+
+def _area_normalize(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    y = np.clip(np.asarray(y, dtype=float), 0.0, None)
+    area = np.trapz(y, x)
+    return y / area if area > 0 else y
+
+
+def _detect_distribution_peaks(
+    r_grid: np.ndarray,
+    distribution: np.ndarray,
+) -> List[Dict[str, float]]:
+    """Return coarse modal summaries for a nonnegative radius distribution."""
+    r_grid = np.asarray(r_grid, dtype=float)
+    distribution = np.clip(np.asarray(distribution, dtype=float), 0.0, None)
+    total = np.trapz(distribution, r_grid)
+    if total <= 0 or r_grid.size < 3:
+        return []
+
+    maxima = np.where(
+        np.r_[
+            False,
+            (distribution[1:-1] > distribution[:-2])
+            & (distribution[1:-1] >= distribution[2:]),
+            False,
+        ]
+    )[0]
+    if maxima.size == 0:
+        maxima = np.array([int(np.argmax(distribution))])
+
+    bounds = [0]
+    for left, right in zip(maxima[:-1], maxima[1:]):
+        segment = distribution[left : right + 1]
+        bounds.append(left + int(np.argmin(segment)))
+    bounds.append(r_grid.size - 1)
+
+    peaks = []
+    for left, right in zip(bounds[:-1], bounds[1:]):
+        sl = slice(left, right + 1)
+        r_seg = r_grid[sl]
+        d_seg = distribution[sl]
+        amount = np.trapz(d_seg, r_seg)
+        if amount <= 0:
+            continue
+        mean = np.trapz(r_seg * d_seg, r_seg) / amount
+        var = np.trapz(((r_seg - mean) ** 2) * d_seg, r_seg) / amount
+        peaks.append(
+            {
+                "radius": float(mean),
+                "radius_nm": float(mean * 1e9),
+                "relative_amount": float(amount / total),
+                "cv": float(np.sqrt(max(var, 0.0)) / mean) if mean > 0 else np.nan,
+            }
+        )
+    peaks.sort(key=lambda item: item["relative_amount"], reverse=True)
+    return peaks
 
 
 class Data:
@@ -528,6 +626,161 @@ class Dataloader():
                     return None if pd.isna(coerced) else float(coerced)
                 except Exception:
                     return None
+
+        @staticmethod
+        def _first_numeric_from_column(frame, column):
+            if frame is None or column is None:
+                return None
+            try:
+                series = pd.to_numeric(frame[column], errors="coerce").dropna()
+            except Exception:
+                return None
+            if series.empty:
+                return None
+            return Dataloader.Analyzer._coerce_numeric(series.iloc[0])
+
+        @staticmethod
+        def _find_summary_column(columns, preferred, predicates):
+            if columns is None:
+                return None
+            if preferred in columns:
+                return preferred
+            for column in columns:
+                lowered = str(column).lower()
+                if any(predicate(lowered) for predicate in predicates):
+                    return column
+            return None
+
+        @staticmethod
+        def _match_summary_repetition_row(summary_df, repetition_label):
+            if summary_df is None or getattr(summary_df, "empty", True):
+                return None
+            if repetition_label is None or "Repetition" not in summary_df.columns:
+                return None
+
+            rep_token = str(repetition_label)
+            match = re.search(r"(\d+)", rep_token)
+            if match:
+                rep_token = match.group(1)
+
+            def _matches(value):
+                if pd.isna(value):
+                    return False
+                value_str = str(value)
+                return value_str == str(repetition_label) or value_str == rep_token
+
+            rows = summary_df[summary_df["Repetition"].apply(_matches)]
+            return rows.iloc[0] if not rows.empty else None
+
+        @staticmethod
+        def _select_summary_frame(summary_dict, preferred_name, allow_any=True):
+            if not isinstance(summary_dict, dict) or not summary_dict:
+                return None
+
+            def _is_frame(obj):
+                return hasattr(obj, "columns")
+
+            if preferred_name and preferred_name in summary_dict:
+                candidate = summary_dict[preferred_name]
+                if _is_frame(candidate):
+                    return candidate
+
+            preferred_lower = preferred_name.lower() if preferred_name else None
+            if preferred_lower:
+                for name, frame in summary_dict.items():
+                    if str(name).lower() == preferred_lower and _is_frame(frame):
+                        return frame
+
+            for name, frame in summary_dict.items():
+                if "summary" in str(name).lower() and _is_frame(frame):
+                    return frame
+
+            if allow_any:
+                for frame in summary_dict.values():
+                    if _is_frame(frame):
+                        return frame
+            return None
+
+        def _resolve_scattering_summary(
+            self,
+            summary_df,
+            summary_row=None,
+            repetition_label=None,
+            q_col="Scattering vector [1/nm]",
+            scattering_angle_col="Scattering angle [deg]",
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index=1.33,
+        ):
+            """Resolve q [1/nm] and solvent refractive index from an LS summary."""
+            refractive_index = float(default_refractive_index)
+            columns = getattr(summary_df, "columns", None)
+            if summary_row is None:
+                summary_row = self._match_summary_repetition_row(
+                    summary_df, repetition_label
+                )
+
+            n_col = self._find_summary_column(
+                columns,
+                refractive_index_col,
+                [lambda lowered: "refractive" in lowered],
+            )
+            angle_col = self._find_summary_column(
+                columns,
+                scattering_angle_col,
+                [lambda lowered: "angle" in lowered],
+            )
+            q_candidate_col = self._find_summary_column(
+                columns,
+                q_col,
+                [
+                    lambda lowered: "scattering vector" in lowered,
+                    lambda lowered: lowered.strip() == "q",
+                ],
+            )
+
+            def _row_numeric(column):
+                if summary_row is None or column is None:
+                    return None
+                try:
+                    if column not in summary_row.index:
+                        return None
+                    return self._coerce_numeric(summary_row.get(column))
+                except Exception:
+                    return None
+
+            n_value = _row_numeric(n_col)
+            if n_value is None:
+                n_value = self._first_numeric_from_column(summary_df, n_col)
+            if n_value is not None and n_value > 0:
+                refractive_index = float(n_value)
+
+            scattering_angle = _row_numeric(angle_col)
+            if scattering_angle is None:
+                scattering_angle = self._first_numeric_from_column(summary_df, angle_col)
+
+            q_value = _row_numeric(q_candidate_col)
+            if q_value is None:
+                q_value = self._first_numeric_from_column(summary_df, q_candidate_col)
+
+            q_source = None
+            if scattering_angle is not None:
+                theta = np.radians(scattering_angle)
+                q_value = float(
+                    (4 * np.pi * refractive_index / self._default_wavelength())
+                    * np.sin(theta / 2.0)
+                )
+                q_source = "angle"
+            elif q_value is not None:
+                q_value = float(q_value)
+                q_source = "summary"
+
+            return {
+                "q": q_value,
+                "q_source": q_source,
+                "scattering_angle": scattering_angle,
+                "refractive_index": refractive_index,
+                "summary_row": summary_row,
+            }
             
         
         def sq(
@@ -540,6 +793,8 @@ class Dataloader():
             intensity_col="Laser intensity [mW]",
             q_col="Scattering vector [1/nm]",
             scattering_angle_col="Scattering angle [deg]",
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index=1.33,
             x0=None,
         ):
             """
@@ -587,44 +842,6 @@ class Dataloader():
                 where each entry has length equal to the number of measurements
                 successfully processed.
             """
-
-            def _coerce_scalar_numeric(value):
-                """Return numeric scalar if convertible, otherwise None."""
-                if value is None or (isinstance(value, float) and pd.isna(value)):
-                    return None
-                try:
-                    return float(value)
-                except Exception:
-                    try:
-                        coerced = pd.to_numeric(value, errors="coerce")
-                        if hasattr(coerced, "item"):
-                            coerced = coerced.item()
-                        return None if pd.isna(coerced) else float(coerced)
-                    except Exception:
-                        return None
-
-            def _match_repetition_row(summary_df, repetition_label):
-                """Return matching row for a given repetition label, or None."""
-                if summary_df is None or summary_df.empty:
-                    return None
-
-                if "Repetition" in summary_df.columns:
-                    rep_token = repetition_label
-                    match = re.search(r"(\d+)", repetition_label)
-                    if match:
-                        rep_token = match.group(1)
-
-                    def _matches(value):
-                        if pd.isna(value):
-                            return False
-                        value_str = str(value)
-                        return value_str == repetition_label or value_str == rep_token
-
-                    rows = summary_df[summary_df["Repetition"].apply(_matches)]
-                    if not rows.empty:
-                        return rows.iloc[0]
-
-                return None
 
             def _extract_count_values(count_df):
                 """Return flattened count values excluding obvious time columns."""
@@ -696,21 +913,24 @@ class Dataloader():
 
                     rep_summary_df = files.get(summary_file)
                     summary_source = rep_summary_df if rep_summary_df is not None else summary_df
-                    summary_row = _match_repetition_row(summary_source, repetition)
+                    summary_row = self._match_summary_repetition_row(
+                        summary_source, repetition
+                    )
+                    scattering = self._resolve_scattering_summary(
+                        summary_source,
+                        summary_row=summary_row,
+                        q_col=q_col,
+                        scattering_angle_col=scattering_angle_col,
+                        refractive_index_col=refractive_index_col,
+                        default_refractive_index=default_refractive_index,
+                    )
                     laser_intensity = None
-                    q_value = None
-                    scattering_angle = None
+                    q_value = scattering["q"]
 
                     if summary_row is not None:
                         if intensity_col in summary_row:
-                            laser_intensity = _coerce_scalar_numeric(
+                            laser_intensity = self._coerce_numeric(
                                 summary_row.get(intensity_col)
-                            )
-                        if q_col in summary_row:
-                            q_value = _coerce_scalar_numeric(summary_row.get(q_col))
-                        if scattering_angle_col in summary_row:
-                            scattering_angle = _coerce_scalar_numeric(
-                                summary_row.get(scattering_angle_col)
                             )
 
                     if laser_intensity is None and summary_source is not None:
@@ -724,34 +944,6 @@ class Dataloader():
                                 if not laser_series.empty
                                 else None
                             )
-
-                    if scattering_angle is not None:
-                        theta = np.radians(scattering_angle)
-                        q_value = float(
-                            (4 * np.pi / self._default_wavelength())
-                            * np.sin(theta / 2)
-                        )
-                    elif q_value is None and summary_source is not None:
-                        if q_col in summary_source.columns:
-                            q_series = pd.to_numeric(
-                                summary_source[q_col], errors="coerce"
-                            ).dropna()
-                            if not q_series.empty:
-                                q_value = float(q_series.iloc[0])
-                        else:
-                            # Soft fallback: search for a column containing "scattering vector" or "q"
-                            lower_cols = {c.lower(): c for c in summary_source.columns}
-                            fallback_col = None
-                            for key, orig in lower_cols.items():
-                                if "scattering vector" in key or key == "q":
-                                    fallback_col = orig
-                                    break
-                            if fallback_col:
-                                q_series = pd.to_numeric(
-                                    summary_source[fallback_col], errors="coerce"
-                                ).dropna()
-                                if not q_series.empty:
-                                    q_value = float(q_series.iloc[0])
 
                     if laser_intensity in (None, 0):
                         laser_intensity = 1.0
@@ -775,7 +967,7 @@ class Dataloader():
 
                 q_value = None
                 for candidate in rep_q_values:
-                    numeric_candidate = _coerce_scalar_numeric(candidate)
+                    numeric_candidate = self._coerce_numeric(candidate)
                     if numeric_candidate is not None:
                         q_value = numeric_candidate
                         break
@@ -1619,6 +1811,8 @@ class Dataloader():
             beta_col,
             q_col,
             scattering_angle_col,
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index=1.33,
         ):
             sample_node = data.samples.get(sample, {})
             experiment_node = sample_node.get("experiments", {}).get(experiment, {})
@@ -1639,37 +1833,21 @@ class Dataloader():
             temperature_values = []
             viscosity_values = []
 
-            def _extract_q(summary_df):
-                if summary_df is None:
-                    return None
-                if q_col in summary_df.columns:
-                    series = pd.to_numeric(summary_df[q_col], errors="coerce").dropna()
-                    if not series.empty:
-                        return float(series.iloc[0])
-                if scattering_angle_col in summary_df.columns:
-                    angle_series = pd.to_numeric(
-                        summary_df[scattering_angle_col], errors="coerce"
-                    ).dropna()
-                    if not angle_series.empty:
-                        theta = angle_series.iloc[0]
-                        theta_rad = np.radians(theta)
-                        return float(
-                            (4 * np.pi / self._default_wavelength())
-                            * np.sin(theta_rad / 2.0)
-                        )
-                for col in summary_df.columns:
-                    lower = col.lower()
-                    if "scattering vector" in lower or lower.strip() == "q":
-                        series = pd.to_numeric(summary_df[col], errors="coerce").dropna()
-                        if not series.empty:
-                            return float(series.iloc[0])
-                return None
-
             for meas_key in measurement_keys:
                 measurement = measurement_nodes.get(meas_key, {})
                 summary_map = measurement.get("summary", {})
                 measurement_summary = summary_map.get(summary_file)
-                measurement_q = _extract_q(measurement_summary)
+                measurement_scattering = self._resolve_scattering_summary(
+                    measurement_summary,
+                    q_col=q_col,
+                    scattering_angle_col=scattering_angle_col,
+                    refractive_index_col=refractive_index_col,
+                    default_refractive_index=default_refractive_index,
+                )
+                measurement_q = measurement_scattering["q"]
+                measurement_refractive_index = measurement_scattering[
+                    "refractive_index"
+                ]
                 measurement_beta = None
                 if measurement_summary is not None and beta_col in measurement_summary.columns:
                     beta_series = pd.to_numeric(
@@ -1731,9 +1909,17 @@ class Dataloader():
                     g2 = g2[order]
 
                     rep_summary_df = files.get(summary_file)
-                    q_current = _extract_q(rep_summary_df) or measurement_q
+                    rep_scattering = self._resolve_scattering_summary(
+                        rep_summary_df,
+                        q_col=q_col,
+                        scattering_angle_col=scattering_angle_col,
+                        refractive_index_col=refractive_index_col,
+                        default_refractive_index=measurement_refractive_index,
+                    )
+                    q_current = rep_scattering["q"] or measurement_q
                     if q_current is None:
                         continue
+                    refractive_index = rep_scattering["refractive_index"]
 
                     beta_value = measurement_beta
                     if beta_value is None and rep_summary_df is not None and beta_col in rep_summary_df.columns:
@@ -1761,7 +1947,11 @@ class Dataloader():
                             q=q_current,
                             beta=beta_value,
                             sigma=sigma,
-                            metadata={"measurement": meas_key, "repetition": repetition},
+                            metadata={
+                                "measurement": meas_key,
+                                "repetition": repetition,
+                                "refractive_index": refractive_index,
+                            },
                         )
                     )
 
@@ -2117,19 +2307,40 @@ class Dataloader():
             beta_col="Intercept",
             q_col="Scattering vector [1/nm]",
             scattering_angle_col="Scattering angle [deg]",
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index: float = 1.33,
             temperature: Optional[float] = None,
             viscosity: Optional[float] = None,
             datasets: Optional[List[CorennDataSet]] = None,
             radius_range: Tuple[float, float] = (1e-10, 1e-5),
-            n_basis: int = 30,
-            n_R: int = 200,
+            n_basis: int = 50,
+            n_R: int = 600,
             lam_min: float = 1e-12,
             lam_max: float = 1e3,
             n_lam: int = 150,
             regularization: float = 1e-9,
+            correlation_format: str = "excess",
+            use_log_radius: bool = True,
+            fit_beta: bool = False,
+            fit_offset: bool = False,
+            beta_bounds: Tuple[float, float] = (0.0, np.inf),
+            offset_bounds: Tuple[float, float] = (-np.inf, np.inf),
+            normalization_weight: float = 100.0,
+            max_nfev: int = 5000,
         ) -> Dict[str, object]:
             """
-            Perform multi-q CORENN inversion to estimate a particle size distribution.
+            Perform nonlinear multi-q PCT-CORENN inversion.
+
+            The fitted data are the correlation excess, ``g2 - 1``. For each
+            DLS curve the raw model is
+
+                y(q, tau) = offset_q + beta_q * g1(q, tau)^2
+
+            where ``g1`` is generated from a shared nonnegative cubic B-spline
+            PSD. The solver performs nonlinear weighted least squares on the
+            unlinearized data, adds a Tikhonov second-difference smoothness
+            penalty, and selects the penalty by generalized cross validation
+            using a Gauss-Newton linearization at each converged solution.
 
             Parameters
             ----------
@@ -2169,6 +2380,24 @@ class Dataloader():
                 Range and resolution of the regularisation parameter scan.
             regularization : float, optional
                 Small diagonal damping factor for numerical stability.
+            correlation_format : {"excess", "full", "auto"}, optional
+                Whether input correlation arrays are already ``g2 - 1``, full
+                ``g2``, or should be inferred from the long-lag tail.
+            use_log_radius : bool, optional
+                Evaluate the B-spline basis uniformly in ``log(R)``. This is the
+                default because PSDs typically span decades in radius.
+            fit_beta, fit_offset : bool, optional
+                Profile per-curve ``beta`` or additive excess-correlation offset
+                during the nonlinear solve. By default both are fixed to the
+                measured intercept and zero offset, respectively.
+            beta_bounds, offset_bounds : tuple, optional
+                Bounds applied when profiling per-curve nuisance parameters.
+            normalization_weight : float, optional
+                Weight for the coefficient-area constraint. The model itself
+                uses normalized coefficients; this term fixes the otherwise
+                arbitrary coefficient scale.
+            max_nfev : int, optional
+                Maximum nonlinear solver evaluations per regularization value.
 
             Returns
             -------
@@ -2176,6 +2405,8 @@ class Dataloader():
                 Dictionary containing the PSD, optimal λ, fitted ``g2`` traces and
                 metadata for each repetition.
             """
+            if least_squares is None or nnls is None:
+                raise ImportError("scipy.optimize is required for nonlinear PCT-CORENN.")
 
             if datasets is None:
                 if data is None or sample is None or experiment is None:
@@ -2192,6 +2423,8 @@ class Dataloader():
                     beta_col,
                     q_col,
                     scattering_angle_col,
+                    refractive_index_col,
+                    default_refractive_index,
                 )
                 if temperature is None:
                     temperature = inferred_temp
@@ -2209,128 +2442,881 @@ class Dataloader():
             if viscosity > 1.0:  # assume input in mPa·s
                 viscosity *= 1e-3
 
+            if lam_min <= 0 or lam_max <= lam_min:
+                raise ValueError("Require 0 < lam_min < lam_max.")
+            if n_lam < 1:
+                raise ValueError("n_lam must be positive.")
+            if correlation_format not in {"excess", "full", "auto"}:
+                raise ValueError("correlation_format must be 'excess', 'full', or 'auto'.")
+
             R_min, R_max = radius_range
             R_grid = _build_radius_grid(R_min, R_max, n_R=n_R)
             w_R = _trapezoid_weights(R_grid)
-            Phi, Phi_dd, _ = _build_bspline_basis(R_grid, n_basis=n_basis, degree=3)
-            B = Phi_dd * np.sqrt(w_R[:, None])
-            L_reg = B.T @ B
+            Phi, _, knots = _build_bspline_basis(
+                R_grid, n_basis=n_basis, degree=3, log_space=use_log_radius
+            )
+            D2 = _second_difference_operator(n_basis)
+            basis_integrals = np.clip(w_R @ Phi, 1e-300, None)
+            normalization_vector = np.ones(n_basis, dtype=float)
 
             diffusion = k_BOLTZMANN * temperature / (6.0 * np.pi * viscosity * R_grid)
             W_Phi = w_R[:, None] * Phi
 
-            K_list = []
-            y_blocks = []
-            K_blocks = []
-            beta_values = []
-            metadata = []
+            def _as_excess(values):
+                arr = np.asarray(values, dtype=float).ravel()
+                if correlation_format == "excess":
+                    return arr
+                if correlation_format == "full":
+                    return arr - 1.0
+                tail = arr[-max(3, arr.size // 10) :]
+                tail_level = np.nanmedian(tail) if tail.size else np.nan
+                if np.isfinite(tail_level) and 0.5 < tail_level < 1.5 and np.nanmax(arr) > 1.0:
+                    return arr - 1.0
+                return arr
+
+            def _clip(value, bounds):
+                lo, hi = bounds
+                if np.isfinite(lo):
+                    value = max(value, lo)
+                if np.isfinite(hi):
+                    value = min(value, hi)
+                return value
+
+            payloads = []
 
             for ds in datasets:
                 tau = np.asarray(ds.tau, dtype=float).ravel()
-                g_minus = np.asarray(ds.g2, dtype=float).ravel()
-                if tau.shape != g_minus.shape:
+                y_raw = np.asarray(ds.g2, dtype=float).ravel()
+                if tau.shape != y_raw.shape:
                     raise ValueError("tau and g2 must share the same shape per dataset.")
+                y = _as_excess(y_raw)
+                valid = np.isfinite(tau) & np.isfinite(y)
+                if ds.sigma is not None:
+                    sigma_raw = np.asarray(ds.sigma, dtype=float).ravel()
+                    if sigma_raw.shape != y_raw.shape:
+                        raise ValueError("sigma must match tau and g2 per dataset.")
+                    sigma = sigma_raw[valid]
+                else:
+                    sigma = None
+                tau = tau[valid]
+                y = y[valid]
+                if tau.size < 3:
+                    continue
+                order = np.argsort(tau)
+                tau = tau[order]
+                y = y[order]
+                if sigma is not None:
+                    sigma = sigma[order]
+
                 q_si = float(ds.q) * 1e9  # convert from 1/nm to 1/m
                 K_d = _build_kernel_for_dataset(q_si, tau, diffusion, W_Phi)
-                K_list.append(K_d)
-                metadata.append(ds.metadata or {})
+                K_d = K_d / basis_integrals[None, :]
+                beta_val = float(ds.beta) if ds.beta not in (None, 0) else 1.0
+                beta_val = _clip(beta_val, beta_bounds)
 
-                beta_val = ds.beta if ds.beta not in (None, 0) else 1.0
-                beta_values.append(beta_val)
-
-                if ds.sigma is not None:
-                    sigma = np.asarray(ds.sigma, dtype=float).ravel()
-                    sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, 1.0)
-                    suppress_mask = g_minus < (-2.0 * sigma)
-                    if np.any(suppress_mask):
-                        g_minus = g_minus.copy()
-                        g_minus[suppress_mask] = 0.0
+                if sigma is None:
+                    lag_index = np.arange(tau.size, dtype=float)
+                    relative = (lag_index + 1.0) / np.maximum(tau.size - lag_index, 1.0)
+                    base = max(float(np.nanmax(np.abs(y))) if y.size else 1.0, 1e-12)
+                    sigma = np.maximum(np.abs(y) * relative, base * 1e-3)
                 else:
-                    sigma = np.ones_like(g_minus, dtype=float)
+                    finite_sigma = sigma[np.isfinite(sigma) & (sigma > 0)]
+                    floor = (
+                        max(float(np.nanmax(np.abs(y))) * 1e-6, 1e-12)
+                        if y.size
+                        else 1e-12
+                    )
+                    fill = float(np.nanmedian(finite_sigma)) if finite_sigma.size else floor
+                    sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, fill)
+                    sigma = np.maximum(sigma, floor)
 
-                shifted = np.clip(g_minus, 0.0, None) / max(beta_val, 1e-12)
-                g_target = np.sqrt(shifted)
+                payloads.append(
+                    {
+                        "tau": tau,
+                        "y": y,
+                        "y_raw": y_raw[valid][order],
+                        "sigma": sigma,
+                        "weights": 1.0 / np.clip(sigma, 1e-12, None),
+                        "K": K_d,
+                        "q": float(ds.q),
+                        "q_si": q_si,
+                        "beta": beta_val,
+                        "offset": 0.0,
+                        "metadata": ds.metadata or {},
+                    }
+                )
 
-                weights = 1.0 / np.clip(sigma, 1e-12, None)
-                y_blocks.append(weights * g_target)
-                K_blocks.append(weights[:, None] * K_d)
+            if not payloads:
+                raise ValueError("No valid CORENN datasets remain after filtering.")
 
-            K_stack = np.vstack(K_blocks)
-            y_stack = np.concatenate(y_blocks)
-            S = K_stack.T @ K_stack
-            b = K_stack.T @ y_stack
+            def _normalize_coefficients(x):
+                x = np.clip(np.asarray(x, dtype=float), 0.0, None)
+                area = float(normalization_vector @ x)
+                if not np.isfinite(area) or area <= 1e-30:
+                    x = np.ones(n_basis, dtype=float)
+                    area = float(normalization_vector @ x)
+                return x / area, area
+
+            def _normalized_jacobian(matrix, x, area):
+                raw = matrix @ x
+                return (matrix * area - raw[:, None] * normalization_vector[None, :]) / (
+                    area**2
+                )
+
+            def _profile_parameters(x_norm):
+                beta_list = []
+                offset_list = []
+                for payload in payloads:
+                    z = (payload["K"] @ x_norm) ** 2
+                    y = payload["y"]
+                    w = payload["weights"]
+                    beta_val = payload["beta"]
+                    offset_val = payload["offset"]
+
+                    if fit_beta and fit_offset:
+                        design = np.column_stack([z, np.ones_like(z)])
+                        try:
+                            params, *_ = np.linalg.lstsq(
+                                w[:, None] * design, w * y, rcond=None
+                            )
+                            beta_val = float(params[0])
+                            offset_val = float(params[1])
+                        except np.linalg.LinAlgError:
+                            pass
+                    elif fit_beta:
+                        numerator = float(np.sum((w**2) * (y - offset_val) * z))
+                        denominator = float(np.sum((w**2) * z * z))
+                        if denominator > 0:
+                            beta_val = numerator / denominator
+                    elif fit_offset:
+                        denominator = float(np.sum(w**2))
+                        if denominator > 0:
+                            offset_val = float(
+                                np.sum((w**2) * (y - beta_val * z)) / denominator
+                            )
+
+                    beta_list.append(_clip(beta_val, beta_bounds))
+                    offset_list.append(_clip(offset_val, offset_bounds))
+                return beta_list, offset_list
+
+            def _residual_for_lambda(x, lam):
+                x_norm, area = _normalize_coefficients(x)
+                beta_list, offset_list = _profile_parameters(x_norm)
+                pieces = []
+                for payload, beta_val, offset_val in zip(
+                    payloads, beta_list, offset_list
+                ):
+                    u = payload["K"] @ x_norm
+                    model = offset_val + beta_val * u * u
+                    pieces.append(payload["weights"] * (payload["y"] - model))
+                if lam > 0:
+                    pieces.append(np.sqrt(lam) * (D2 @ x_norm))
+                if regularization > 0:
+                    pieces.append(np.sqrt(regularization) * x_norm)
+                if normalization_weight > 0:
+                    pieces.append(np.array([normalization_weight * (area - 1.0)]))
+                return np.concatenate(pieces)
+
+            def _jacobian_for_lambda(x, lam):
+                x_norm, area = _normalize_coefficients(x)
+                beta_list, _ = _profile_parameters(x_norm)
+                pieces = []
+                for payload, beta_val in zip(payloads, beta_list):
+                    K_d = payload["K"]
+                    raw_u = K_d @ x
+                    u = K_d @ x_norm
+                    du_dx = (K_d * area - raw_u[:, None] * normalization_vector[None, :]) / (
+                        area**2
+                    )
+                    J_model = 2.0 * beta_val * u[:, None] * du_dx
+                    pieces.append(-(payload["weights"][:, None]) * J_model)
+                if lam > 0:
+                    pieces.append(np.sqrt(lam) * _normalized_jacobian(D2, x, area))
+                if regularization > 0:
+                    pieces.append(
+                        np.sqrt(regularization)
+                        * _normalized_jacobian(np.eye(n_basis), x, area)
+                    )
+                if normalization_weight > 0:
+                    pieces.append(
+                        normalization_weight * normalization_vector[None, :]
+                    )
+                return np.vstack(pieces)
+
+            def _data_jacobian(x, beta_list):
+                x_norm, area = _normalize_coefficients(x)
+                blocks = []
+                for payload, beta_val in zip(payloads, beta_list):
+                    K_d = payload["K"]
+                    raw_u = K_d @ x
+                    u = K_d @ x_norm
+                    du_dx = (K_d * area - raw_u[:, None] * normalization_vector[None, :]) / (
+                        area**2
+                    )
+                    blocks.append(
+                        payload["weights"][:, None]
+                        * (2.0 * beta_val * u[:, None] * du_dx)
+                    )
+                return np.vstack(blocks)
+
+            def _gcv_score(x, lam):
+                x_norm, area = _normalize_coefficients(x)
+                beta_list, offset_list = _profile_parameters(x_norm)
+                residuals = []
+                for payload, beta_val, offset_val in zip(
+                    payloads, beta_list, offset_list
+                ):
+                    u = payload["K"] @ x_norm
+                    model = offset_val + beta_val * u * u
+                    residuals.append(payload["weights"] * (payload["y"] - model))
+                resid = np.concatenate(residuals)
+                J = _data_jacobian(x, beta_list)
+                L = _normalized_jacobian(D2, x, area)
+                A = J.T @ J + lam * (L.T @ L) + regularization * np.eye(n_basis)
+                try:
+                    solved = np.linalg.solve(A, J.T)
+                except np.linalg.LinAlgError:
+                    return np.inf
+                dof = float(np.einsum("ij,ji->", J, solved))
+                n_data = resid.size
+                denom = (1.0 - dof / n_data) ** 2
+                return float(np.mean(resid**2) / denom) if denom > 1e-12 else np.inf
+
+            linearized_rows = []
+            linearized_targets = []
+            for payload in payloads:
+                target = np.sqrt(
+                    np.clip(payload["y"] - payload["offset"], 0.0, None)
+                    / max(payload["beta"], 1e-12)
+                )
+                linearized_rows.append(payload["weights"][:, None] * payload["K"])
+                linearized_targets.append(payload["weights"] * target)
+
+            seed_lam = max(lam_min, min(lam_max, np.sqrt(lam_min * lam_max)))
+            seed_matrix = np.vstack(
+                linearized_rows
+                + [
+                    np.sqrt(seed_lam) * D2,
+                    normalization_weight * normalization_vector[None, :],
+                ]
+            )
+            seed_target = np.concatenate(
+                linearized_targets + [np.zeros(D2.shape[0]), np.array([normalization_weight])]
+            )
+            try:
+                x0, _ = nnls(
+                    seed_matrix,
+                    seed_target,
+                    maxiter=max(100000, 500 * n_basis),
+                )
+            except RuntimeError:
+                x0 = np.maximum(np.linalg.pinv(seed_matrix) @ seed_target, 0.0)
+            x0, _ = _normalize_coefficients(x0)
 
             lambda_grid = np.logspace(np.log10(lam_min), np.log10(lam_max), n_lam)
             best_lambda = None
             best_x = None
             best_gcv = np.inf
+            best_result = None
             gcv_values = []
-            n_data = y_stack.size
-            ident = np.eye(n_basis)
+            x_warm = x0.copy()
 
             for lam in lambda_grid:
-                A = S + lam * L_reg + regularization * ident
-                x = np.linalg.solve(A, b)
-                residual = y_stack - K_stack @ x
-                num = float(np.mean(residual**2))
-                A_inv_S = np.linalg.solve(A, S)
-                d_eff = float(np.trace(A_inv_S))
-                denom = (1.0 - d_eff / n_data) ** 2
-                gcv = num / denom if denom > 1e-12 else np.inf
+                result = least_squares(
+                    _residual_for_lambda,
+                    x_warm,
+                    jac=_jacobian_for_lambda,
+                    args=(lam,),
+                    bounds=(0.0, np.inf),
+                    method="trf",
+                    max_nfev=max_nfev,
+                    x_scale="jac",
+                    ftol=1e-12,
+                    xtol=1e-12,
+                    gtol=1e-12,
+                )
+                x_candidate, _ = _normalize_coefficients(result.x)
+                result.x = x_candidate
+                gcv = _gcv_score(x_candidate, lam)
                 gcv_values.append(gcv)
+                x_warm = x_candidate
                 if gcv < best_gcv:
                     best_gcv = gcv
                     best_lambda = lam
-                    best_x = x
+                    best_x = x_candidate.copy()
+                    best_result = result
 
             if best_x is None:
                 raise RuntimeError("Failed to determine a valid PSD solution.")
 
-            I_R = Phi @ best_x
-            I_R = np.clip(I_R, 0.0, None)
+            best_x, _ = _normalize_coefficients(best_x)
+            beta_values, offset_values = _profile_parameters(best_x)
 
             g2_model_list = []
             dataset_records = []
-            for ds, K_d, beta_val, meta in zip(
-                datasets, K_list, beta_values, metadata
+            weighted_residuals = []
+            K_list = []
+            for payload, beta_val, offset_val in zip(
+                payloads, beta_values, offset_values
             ):
+                K_d = payload["K"]
+                K_list.append(K_d)
                 u = K_d @ best_x
-                g2_model = beta_val * (u**2)
-                measured = np.asarray(ds.g2, dtype=float)
-                peak_model = float(np.max(g2_model)) if g2_model.size else 0.0
-                peak_target = float(np.max(measured)) if measured.size else 0.0
-                if peak_model > 0 and peak_target > 0:
-                    g2_model = g2_model * (peak_target / peak_model)
+                g2_model = offset_val + beta_val * (u**2)
+                residual = payload["y"] - g2_model
+                weighted_residuals.append(payload["weights"] * residual)
                 g2_model_list.append(g2_model)
                 dataset_records.append(
                     {
-                        "measurement": (meta or {}).get("measurement"),
-                        "repetition": (meta or {}).get("repetition"),
-                        "q": float(ds.q),
+                        "measurement": payload["metadata"].get("measurement"),
+                        "repetition": payload["metadata"].get("repetition"),
+                        "q": float(payload["q"]),
                         "beta": float(beta_val),
-                        "tau": np.asarray(ds.tau, dtype=float),
-                        "g2": np.asarray(ds.g2, dtype=float),
-                        "sigma": None
-                        if ds.sigma is None
-                        else np.asarray(ds.sigma, dtype=float),
+                        "offset": float(offset_val),
+                        "tau": payload["tau"],
+                        "g2": payload["y"],
+                        "g2_raw": payload["y_raw"],
+                        "sigma": payload["sigma"],
+                        "g1_model": u,
                         "g2_model": g2_model,
-                        "metadata": meta or {},
+                        "residual": residual,
+                        "metadata": payload["metadata"],
                     }
                 )
+
+            density_coefficients = best_x / basis_integrals
+            I_R = _area_normalize(Phi @ density_coefficients, R_grid)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                number_R = _area_normalize(np.where(R_grid > 0, I_R / R_grid**6, 0.0), R_grid)
+                volume_R = _area_normalize(np.where(R_grid > 0, I_R / R_grid**3, 0.0), R_grid)
+            all_weighted_residuals = np.concatenate(weighted_residuals)
 
             return {
                 "R_grid": R_grid,
                 "Phi": Phi,
+                "knots": knots,
                 "coefficients": best_x,
+                "density_coefficients": density_coefficients,
                 "I_R": I_R,
+                "number_R": number_R,
+                "volume_R": volume_R,
                 "lambda_opt": best_lambda,
                 "lambda_grid": lambda_grid,
                 "gcv_values": np.asarray(gcv_values, dtype=float),
+                "gcv_opt": float(best_gcv),
                 "K_list": K_list,
                 "g2_model_list": g2_model_list,
                 "datasets": dataset_records,
                 "temperature": temperature,
                 "viscosity": viscosity,
+                "solver": "nonlinear",
+                "objective": "weighted_raw_correlation_excess",
+                "correlation_format": correlation_format,
+                "use_log_radius": use_log_radius,
+                "fit_beta": fit_beta,
+                "fit_offset": fit_offset,
+                "beta_values": np.asarray(beta_values, dtype=float),
+                "offset_values": np.asarray(offset_values, dtype=float),
+                "residual_norm": float(np.sqrt(np.mean(all_weighted_residuals**2))),
+                "peaks": _detect_distribution_peaks(R_grid, I_R),
+                "linearized_seed": x0,
+                "optimizer": {
+                    "success": bool(best_result.success) if best_result is not None else False,
+                    "status": int(best_result.status) if best_result is not None else None,
+                    "message": best_result.message if best_result is not None else None,
+                    "nfev": int(best_result.nfev) if best_result is not None else None,
+                },
+            }
+
+        def bayesian_joint_sls_dls_map(
+            self,
+            data=None,
+            sample=None,
+            experiment=None,
+            measurements: Optional[Sequence] = None,
+            dls_datasets: Optional[List[CorennDataSet]] = None,
+            sls_q=None,
+            sls_intensity=None,
+            sls_sigma=None,
+            correlation_file="Correlation Function.csv",
+            summary_file="Summary.csv",
+            beta_col="Intercept",
+            q_col="Scattering vector [1/nm]",
+            scattering_angle_col="Scattering angle [deg]",
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index: float = 1.33,
+            temperature: Optional[float] = None,
+            viscosity: Optional[float] = None,
+            radius_range: Tuple[float, float] = (1e-10, 1e-5),
+            n_basis: int = 50,
+            n_R: int = 600,
+            smoothness: float = 1e-2,
+            regularization: float = 1e-9,
+            correlation_format: str = "excess",
+            base_distribution: str = "intensity",
+            use_form_factor: bool = True,
+            fit_dls_beta: bool = False,
+            fit_dls_offset: bool = False,
+            fit_sls_background: bool = True,
+            normalization_weight: float = 100.0,
+            max_nfev: int = 5000,
+        ) -> Dict[str, object]:
+            """MAP posterior fit for a shared SLS/DLS size distribution.
+
+            This is the Bayesian joint-model layer above PCT-CORENN. It uses the
+            same DLS datasets and radius/basis forward model. By default the
+            unknown is a q-independent intensity/optical PSD, because that is
+            the distribution most directly constrained by light scattering. Set
+            ``base_distribution="number"`` or ``"volume"`` only when the
+            corresponding prior is physically justified.
+
+            The returned MAP estimate is equivalent to a Gaussian likelihood
+            with a Gaussian P-spline smoothness prior. The inverse
+            Gauss-Newton Hessian is returned as a local covariance
+            approximation for downstream posterior work.
+            """
+            if least_squares is None:
+                raise ImportError("scipy.optimize is required for joint SLS/DLS MAP.")
+            if correlation_format not in {"excess", "full", "auto"}:
+                raise ValueError("correlation_format must be 'excess', 'full', or 'auto'.")
+            if base_distribution not in {"intensity", "number", "volume"}:
+                raise ValueError(
+                    "base_distribution must be 'intensity', 'number', or 'volume'."
+                )
+
+            if dls_datasets is None:
+                if data is None or sample is None or experiment is None:
+                    raise ValueError(
+                        "Provide dls_datasets or data, sample, and experiment."
+                    )
+                dls_datasets, inferred_temp, inferred_eta = self._prepare_corenn_datasets(
+                    data,
+                    sample,
+                    experiment,
+                    measurements,
+                    correlation_file,
+                    summary_file,
+                    beta_col,
+                    q_col,
+                    scattering_angle_col,
+                    refractive_index_col,
+                    default_refractive_index,
+                )
+                if temperature is None:
+                    temperature = inferred_temp
+                if viscosity is None:
+                    viscosity = inferred_eta
+
+            if sls_q is None or sls_intensity is None:
+                if data is None or sample is None or experiment is None:
+                    raise ValueError(
+                        "Provide sls_q and sls_intensity, or data/sample/experiment."
+                    )
+                (
+                    sq_intensity,
+                    sq_sigma,
+                    sq_q,
+                    *_,
+                ) = self.sq(data, sample=sample, experiment=experiment)
+                sls_q = sq_q
+                sls_intensity = sq_intensity
+                if sls_sigma is None:
+                    sls_sigma = sq_sigma
+
+            if not dls_datasets:
+                raise ValueError("At least one DLS dataset is required.")
+            if temperature is None or viscosity is None:
+                raise ValueError("Temperature and viscosity must be specified.")
+            temperature = float(temperature)
+            viscosity = float(viscosity)
+            if viscosity > 1.0:
+                viscosity *= 1e-3
+
+            R_min, R_max = radius_range
+            R_grid = _build_radius_grid(R_min, R_max, n_R=n_R)
+            w_R = _trapezoid_weights(R_grid)
+            Phi, _, knots = _build_bspline_basis(
+                R_grid, n_basis=n_basis, degree=3, log_space=True
+            )
+            D2 = _second_difference_operator(n_basis)
+            basis_integrals = np.clip(w_R @ Phi, 1e-300, None)
+            density_basis = Phi / basis_integrals[None, :]
+            normalization_vector = np.ones(n_basis, dtype=float)
+            diffusion = k_BOLTZMANN * temperature / (6.0 * np.pi * viscosity * R_grid)
+
+            def _as_excess(values):
+                arr = np.asarray(values, dtype=float).ravel()
+                if correlation_format == "excess":
+                    return arr
+                if correlation_format == "full":
+                    return arr - 1.0
+                tail = arr[-max(3, arr.size // 10) :]
+                tail_level = np.nanmedian(tail) if tail.size else np.nan
+                if np.isfinite(tail_level) and 0.5 < tail_level < 1.5 and np.nanmax(arr) > 1.0:
+                    return arr - 1.0
+                return arr
+
+            def _normalize_coefficients(x):
+                x = np.clip(np.asarray(x, dtype=float), 0.0, None)
+                area = float(normalization_vector @ x)
+                if not np.isfinite(area) or area <= 1e-30:
+                    x = np.ones(n_basis, dtype=float)
+                    area = float(normalization_vector @ x)
+                return x / area, area
+
+            def _optical_weight(q_si):
+                if base_distribution == "number":
+                    weight = R_grid**6
+                elif base_distribution == "volume":
+                    weight = R_grid**3
+                else:
+                    weight = np.ones_like(R_grid)
+                if use_form_factor:
+                    weight = weight * _sphere_form_factor(q_si, R_grid)
+                return weight
+
+            def _kernel_and_static(q_si, tau=None):
+                optical = _optical_weight(q_si)
+                weighted_phi = w_R[:, None] * optical[:, None] * Phi
+                static_coeff = w_R @ (optical[:, None] * Phi)
+                static_coeff = static_coeff / basis_integrals
+                if tau is None:
+                    return None, static_coeff
+                K_d = _build_kernel_for_dataset(q_si, tau, diffusion, weighted_phi)
+                K_d = K_d / basis_integrals[None, :]
+                return K_d, static_coeff
+
+            dls_payloads = []
+            for ds in dls_datasets:
+                tau = np.asarray(ds.tau, dtype=float).ravel()
+                y_raw = np.asarray(ds.g2, dtype=float).ravel()
+                if tau.shape != y_raw.shape:
+                    raise ValueError("tau and g2 must share the same shape per DLS dataset.")
+                y = _as_excess(y_raw)
+                valid = np.isfinite(tau) & np.isfinite(y)
+                tau = tau[valid]
+                y = y[valid]
+                if tau.size < 3:
+                    continue
+                order = np.argsort(tau)
+                tau = tau[order]
+                y = y[order]
+                sigma = None
+                if ds.sigma is not None:
+                    sigma = np.asarray(ds.sigma, dtype=float).ravel()[valid][order]
+                if sigma is None:
+                    lag_index = np.arange(tau.size, dtype=float)
+                    rel = (lag_index + 1.0) / np.maximum(tau.size - lag_index, 1.0)
+                    base = max(float(np.nanmax(np.abs(y))) if y.size else 1.0, 1e-12)
+                    sigma = np.maximum(np.abs(y) * rel, base * 1e-3)
+                else:
+                    finite_sigma = sigma[np.isfinite(sigma) & (sigma > 0)]
+                    floor = max(float(np.nanmax(np.abs(y))) * 1e-6, 1e-12)
+                    fill = float(np.nanmedian(finite_sigma)) if finite_sigma.size else floor
+                    sigma = np.maximum(
+                        np.where(np.isfinite(sigma) & (sigma > 0), sigma, fill),
+                        floor,
+                    )
+                q_si = float(ds.q) * 1e9
+                K_d, static_coeff = _kernel_and_static(q_si, tau)
+                dls_payloads.append(
+                    {
+                        "tau": tau,
+                        "y": y,
+                        "sigma": sigma,
+                        "weights": 1.0 / np.clip(sigma, 1e-12, None),
+                        "K": K_d,
+                        "static_coeff": static_coeff,
+                        "q": float(ds.q),
+                        "q_si": q_si,
+                        "beta": float(ds.beta) if ds.beta not in (None, 0) else 1.0,
+                        "metadata": ds.metadata or {},
+                    }
+                )
+
+            if not dls_payloads:
+                raise ValueError("No valid DLS datasets remain after filtering.")
+
+            sls_q = np.asarray(sls_q, dtype=float).ravel()
+            sls_intensity = np.asarray(sls_intensity, dtype=float).ravel()
+            if sls_q.shape != sls_intensity.shape:
+                raise ValueError("sls_q and sls_intensity must have the same shape.")
+            if sls_sigma is None:
+                finite_i = sls_intensity[np.isfinite(sls_intensity)]
+                floor = max(float(np.nanmax(np.abs(finite_i))) * 1e-3, 1e-12) if finite_i.size else 1.0
+                sls_sigma = np.full_like(sls_intensity, floor, dtype=float)
+            else:
+                sls_sigma = np.asarray(sls_sigma, dtype=float).ravel()
+                if sls_sigma.shape != sls_intensity.shape:
+                    raise ValueError("sls_sigma must match sls_q and sls_intensity.")
+
+            sls_mask = (
+                np.isfinite(sls_q)
+                & np.isfinite(sls_intensity)
+                & np.isfinite(sls_sigma)
+                & (sls_sigma > 0)
+            )
+            sls_q = sls_q[sls_mask]
+            sls_intensity = sls_intensity[sls_mask]
+            sls_sigma = sls_sigma[sls_mask]
+            if sls_q.size < 2:
+                raise ValueError("At least two valid SLS points are required.")
+
+            sls_static_matrix = []
+            for q_val in sls_q:
+                _, static_coeff = _kernel_and_static(float(q_val) * 1e9, tau=None)
+                sls_static_matrix.append(static_coeff)
+            sls_static_matrix = np.vstack(sls_static_matrix)
+
+            def _profile_sls(static_signal):
+                if fit_sls_background:
+                    design = np.column_stack([static_signal, np.ones_like(static_signal)])
+                else:
+                    design = static_signal[:, None]
+                weights = 1.0 / np.clip(sls_sigma, 1e-12, None)
+                params, *_ = np.linalg.lstsq(
+                    weights[:, None] * design,
+                    weights * sls_intensity,
+                    rcond=None,
+                )
+                if fit_sls_background:
+                    scale = float(max(params[0], 0.0))
+                    background = float(params[1])
+                else:
+                    scale = float(max(params[0], 0.0))
+                    background = 0.0
+                return scale, background
+
+            def _profile_dls(x_norm):
+                betas = []
+                offsets = []
+                for payload in dls_payloads:
+                    denom = float(payload["static_coeff"] @ x_norm)
+                    denom = max(denom, 1e-300)
+                    u = (payload["K"] @ x_norm) / denom
+                    z = u * u
+                    beta_val = payload["beta"]
+                    offset_val = 0.0
+                    y = payload["y"]
+                    w = payload["weights"]
+                    if fit_dls_beta and fit_dls_offset:
+                        design = np.column_stack([z, np.ones_like(z)])
+                        params, *_ = np.linalg.lstsq(
+                            w[:, None] * design, w * y, rcond=None
+                        )
+                        beta_val = float(max(params[0], 0.0))
+                        offset_val = float(params[1])
+                    elif fit_dls_beta:
+                        den = float(np.sum((w**2) * z * z))
+                        if den > 0:
+                            beta_val = max(float(np.sum((w**2) * y * z) / den), 0.0)
+                    elif fit_dls_offset:
+                        den = float(np.sum(w**2))
+                        if den > 0:
+                            offset_val = float(np.sum((w**2) * (y - beta_val * z)) / den)
+                    betas.append(beta_val)
+                    offsets.append(offset_val)
+                return betas, offsets
+
+            def _forward(x):
+                x_norm, area = _normalize_coefficients(x)
+                static_signal = sls_static_matrix @ x_norm
+                sls_scale, sls_background = _profile_sls(static_signal)
+                sls_model = sls_scale * static_signal + sls_background
+                dls_betas, dls_offsets = _profile_dls(x_norm)
+                dls_models = []
+                dls_g1 = []
+                for payload, beta_val, offset_val in zip(
+                    dls_payloads, dls_betas, dls_offsets
+                ):
+                    denom = float(payload["static_coeff"] @ x_norm)
+                    denom = max(denom, 1e-300)
+                    g1 = (payload["K"] @ x_norm) / denom
+                    dls_g1.append(g1)
+                    dls_models.append(offset_val + beta_val * g1 * g1)
+                return {
+                    "x_norm": x_norm,
+                    "area": area,
+                    "sls_model": sls_model,
+                    "sls_scale": sls_scale,
+                    "sls_background": sls_background,
+                    "dls_models": dls_models,
+                    "dls_g1": dls_g1,
+                    "dls_betas": dls_betas,
+                    "dls_offsets": dls_offsets,
+                }
+
+            def _posterior_residual(x):
+                pred = _forward(x)
+                pieces = [
+                    (sls_intensity - pred["sls_model"])
+                    / np.clip(sls_sigma, 1e-12, None)
+                ]
+                for payload, model in zip(dls_payloads, pred["dls_models"]):
+                    pieces.append(payload["weights"] * (payload["y"] - model))
+                if smoothness > 0:
+                    pieces.append(np.sqrt(smoothness) * (D2 @ pred["x_norm"]))
+                if regularization > 0:
+                    pieces.append(np.sqrt(regularization) * pred["x_norm"])
+                if normalization_weight > 0:
+                    pieces.append(np.array([normalization_weight * (pred["area"] - 1.0)]))
+                return np.concatenate(pieces)
+
+            # Warm start from the nonlinear CORENN intensity PSD converted to the requested basis.
+            corenn_seed = self.corenn_multi_q(
+                datasets=dls_datasets,
+                temperature=temperature,
+                viscosity=viscosity,
+                radius_range=radius_range,
+                n_basis=n_basis,
+                n_R=n_R,
+                lam_min=1e-8,
+                lam_max=1e1,
+                n_lam=80,
+                regularization=regularization,
+                correlation_format=correlation_format,
+                fit_beta=fit_dls_beta,
+                fit_offset=fit_dls_offset,
+                normalization_weight=normalization_weight,
+                max_nfev=max_nfev,
+            )
+            intensity_seed = np.interp(R_grid, corenn_seed["R_grid"], corenn_seed["I_R"])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                if base_distribution == "number":
+                    base_seed = np.where(R_grid > 0, intensity_seed / R_grid**6, 0.0)
+                elif base_distribution == "volume":
+                    base_seed = np.where(R_grid > 0, intensity_seed / R_grid**3, 0.0)
+                else:
+                    base_seed = intensity_seed
+            base_seed = _area_normalize(base_seed, R_grid)
+            seed_matrix = np.vstack(
+                [density_basis, normalization_weight * normalization_vector[None, :]]
+            )
+            seed_target = np.concatenate([base_seed, np.array([normalization_weight])])
+            try:
+                x0, _ = nnls(
+                    seed_matrix,
+                    seed_target,
+                    maxiter=max(100000, 500 * n_basis),
+                )
+            except RuntimeError:
+                x0 = np.maximum(np.linalg.pinv(seed_matrix) @ seed_target, 0.0)
+            x0, _ = _normalize_coefficients(x0)
+
+            result = least_squares(
+                _posterior_residual,
+                x0,
+                bounds=(0.0, np.inf),
+                method="trf",
+                max_nfev=max_nfev,
+                x_scale="jac",
+                ftol=1e-12,
+                xtol=1e-12,
+                gtol=1e-12,
+            )
+            x_map, _ = _normalize_coefficients(result.x)
+            pred = _forward(x_map)
+            density_coefficients = x_map / basis_integrals
+            base_R = _area_normalize(density_basis @ x_map, R_grid)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                if base_distribution == "number":
+                    number_R = base_R
+                    volume_R = _area_normalize(number_R * R_grid**3, R_grid)
+                    intensity_R = _area_normalize(number_R * R_grid**6, R_grid)
+                elif base_distribution == "volume":
+                    volume_R = base_R
+                    number_R = _area_normalize(
+                        np.where(R_grid > 0, volume_R / R_grid**3, 0.0),
+                        R_grid,
+                    )
+                    intensity_R = _area_normalize(volume_R * R_grid**3, R_grid)
+                else:
+                    intensity_R = base_R
+                    volume_R = _area_normalize(
+                        np.where(R_grid > 0, intensity_R / R_grid**3, 0.0),
+                        R_grid,
+                    )
+                    number_R = _area_normalize(
+                        np.where(R_grid > 0, intensity_R / R_grid**6, 0.0),
+                        R_grid,
+                    )
+
+            covariance = None
+            try:
+                jtj = result.jac.T @ result.jac
+                covariance = np.linalg.pinv(jtj)
+            except Exception:
+                covariance = None
+
+            dls_records = []
+            for payload, model, g1, beta_val, offset_val in zip(
+                dls_payloads,
+                pred["dls_models"],
+                pred["dls_g1"],
+                pred["dls_betas"],
+                pred["dls_offsets"],
+            ):
+                dls_records.append(
+                    {
+                        "measurement": payload["metadata"].get("measurement"),
+                        "repetition": payload["metadata"].get("repetition"),
+                        "q": payload["q"],
+                        "tau": payload["tau"],
+                        "g2": payload["y"],
+                        "sigma": payload["sigma"],
+                        "g1_model": g1,
+                        "g2_model": model,
+                        "beta": float(beta_val),
+                        "offset": float(offset_val),
+                        "residual": payload["y"] - model,
+                        "metadata": payload["metadata"],
+                    }
+                )
+
+            residual = _posterior_residual(x_map)
+            return {
+                "R_grid": R_grid,
+                "Phi": Phi,
+                "knots": knots,
+                "coefficients": x_map,
+                "density_coefficients": density_coefficients,
+                "base_distribution": base_distribution,
+                "base_R": base_R,
+                "number_R": number_R,
+                "volume_R": volume_R,
+                "I_R": intensity_R,
+                "sls": {
+                    "q": sls_q,
+                    "intensity": sls_intensity,
+                    "sigma": sls_sigma,
+                    "model": pred["sls_model"],
+                    "scale": pred["sls_scale"],
+                    "background": pred["sls_background"],
+                    "residual": sls_intensity - pred["sls_model"],
+                },
+                "datasets": dls_records,
+                "temperature": temperature,
+                "viscosity": viscosity,
+                "smoothness": smoothness,
+                "regularization": regularization,
+                "use_form_factor": use_form_factor,
+                "fit_dls_beta": fit_dls_beta,
+                "fit_dls_offset": fit_dls_offset,
+                "fit_sls_background": fit_sls_background,
+                "posterior_covariance": covariance,
+                "residual_norm": float(np.sqrt(np.mean(residual**2))),
+                "log_posterior_at_map": float(-0.5 * np.sum(residual**2)),
+                "peaks": _detect_distribution_peaks(R_grid, base_R),
+                "intensity_peaks": _detect_distribution_peaks(R_grid, intensity_R),
+                "volume_peaks": _detect_distribution_peaks(R_grid, volume_R),
+                "number_peaks": _detect_distribution_peaks(R_grid, number_R),
+                "corenn_seed": corenn_seed,
+                "optimizer": {
+                    "success": bool(result.success),
+                    "status": int(result.status),
+                    "message": result.message,
+                    "nfev": int(result.nfev),
+                },
             }
         
         def plot_corenn_relaxation_rates(
@@ -2418,6 +3404,7 @@ class Dataloader():
                 if q_val in (None, 0) or tau is None:
                     continue
 
+                offset = float(entry.get("offset", 0.0) or 0.0)
                 traces = []
                 if use_model:
                     traces.append(entry.get("g2_model"))
@@ -2429,6 +3416,7 @@ class Dataloader():
                 for trace in traces:
                     if trace is None:
                         continue
+                    trace = np.asarray(trace, dtype=float) - offset
                     gamma = self._estimate_gamma_from_trace(
                         tau,
                         trace,
@@ -2571,6 +3559,8 @@ class Dataloader():
             intensity_col="Laser intensity [mW]",
             q_col="Scattering vector [1/nm]",
             scattering_angle_col="Scattering angle [deg]",
+            refractive_index_col="Solvent refractive index",
+            default_refractive_index=1.33,
             use_multi=False,
             **fit_kwargs,
         ):
@@ -2594,6 +3584,11 @@ class Dataloader():
                 Column name containing scattering vectors (fallback).
             scattering_angle_col : str, optional
                 Angle column used to compute ``q`` when available.
+            refractive_index_col : str, optional
+                Column name containing solvent refractive index for angle-to-q
+                conversion.
+            default_refractive_index : float, optional
+                Refractive index used when no solvent-index column is present.
             use_multi : bool, optional
                 When ``True``, request a multi-exponential correlation fit and use
                 the fastest relaxation rate (largest ``Γ``) to estimate the
@@ -2610,132 +3605,6 @@ class Dataloader():
                 entry includes the average relaxation rate ``gamma`` alongside the
                 diffusivity statistics.
             """
-
-            def _coerce_scalar_numeric(value):
-                if value is None or (isinstance(value, float) and pd.isna(value)):
-                    return None
-                try:
-                    return float(value)
-                except Exception:
-                    try:
-                        coerced = pd.to_numeric(value, errors="coerce")
-                        if hasattr(coerced, "item"):
-                            coerced = coerced.item()
-                        return None if pd.isna(coerced) else float(coerced)
-                    except Exception:
-                        return None
-
-            def _match_repetition_row(summary_df, repetition_label):
-                if summary_df is None or summary_df.empty:
-                    return None
-
-                if "Repetition" in summary_df.columns:
-                    rep_token = repetition_label
-                    match = re.search(r"(\d+)", repetition_label)
-                    if match:
-                        rep_token = match.group(1)
-
-                    def _matches(value):
-                        if pd.isna(value):
-                            return False
-                        value_str = str(value)
-                        return value_str == repetition_label or value_str == rep_token
-
-                    rows = summary_df[summary_df["Repetition"].apply(_matches)]
-                    if not rows.empty:
-                        return rows.iloc[0]
-
-                return None
-
-            def _resolve_scattering_vector(summary_source, summary_row):
-                """Return q-value derived from scattering angle or q columns."""
-
-                def _series_first_numeric(frame, column):
-                    if frame is None or column is None:
-                        return None
-                    try:
-                        series = pd.to_numeric(frame[column], errors="coerce").dropna()
-                    except Exception:
-                        return None
-                    if series.empty:
-                        return None
-                    return _coerce_scalar_numeric(series.iloc[0])
-
-                scattering_angle = None
-                q_value = None
-
-                if summary_row is not None:
-                    if scattering_angle_col in summary_row:
-                        scattering_angle = _coerce_scalar_numeric(
-                            summary_row.get(scattering_angle_col)
-                        )
-                    if q_col in summary_row:
-                        q_value = _coerce_scalar_numeric(summary_row.get(q_col))
-
-                columns = getattr(summary_source, "columns", None)
-                if scattering_angle is None and summary_source is not None and columns is not None:
-                    candidate = None
-                    if scattering_angle_col in columns:
-                        candidate = scattering_angle_col
-                    else:
-                        for col in columns:
-                            if "angle" in col.lower():
-                                candidate = col
-                                break
-                    if candidate:
-                        scattering_angle = _series_first_numeric(summary_source, candidate)
-
-                if scattering_angle is not None:
-                    theta = np.radians(scattering_angle)
-                    return float(
-                        (4 * np.pi / self._default_wavelength()) * np.sin(theta / 2)
-                    )
-
-                if q_value is None and summary_source is not None and columns is not None:
-                    candidate = None
-                    if q_col in columns:
-                        candidate = q_col
-                    else:
-                        for col in columns:
-                            lowered = col.lower()
-                            if "scattering vector" in lowered or lowered.strip() == "q":
-                                candidate = col
-                                break
-                    if candidate:
-                        q_value = _series_first_numeric(summary_source, candidate)
-
-                return q_value
-
-            def _select_summary_frame(summary_dict, preferred_name, allow_any=True):
-                """Return a summary dataframe matching ``preferred_name`` if available."""
-
-                if not isinstance(summary_dict, dict) or not summary_dict:
-                    return None
-
-                def _is_frame(obj):
-                    return hasattr(obj, "columns")
-
-                if preferred_name and preferred_name in summary_dict:
-                    candidate = summary_dict[preferred_name]
-                    if _is_frame(candidate):
-                        return candidate
-
-                preferred_lower = preferred_name.lower() if preferred_name else None
-                if preferred_lower:
-                    for name, frame in summary_dict.items():
-                        if name.lower() == preferred_lower and _is_frame(frame):
-                            return frame
-
-                for name, frame in summary_dict.items():
-                    if "summary" in name.lower() and _is_frame(frame):
-                        return frame
-
-                if allow_any:
-                    for frame in summary_dict.values():
-                        if _is_frame(frame):
-                            return frame
-
-                return None
 
             sample_node = data.samples.get(sample, {})
             experiment_nodes = sample_node.get("experiments", {})
@@ -2757,20 +3626,42 @@ class Dataloader():
                     measurement = measurements[meas_key]
                     repetitions = measurement.get("repetitions", {})
                     summary_map = measurement.get("summary", {})
-                    summary_df = _select_summary_frame(summary_map, summary_file, allow_any=True)
-                    measurement_q_default = _resolve_scattering_vector(summary_df, None)
+                    summary_df = self._select_summary_frame(
+                        summary_map, summary_file, allow_any=True
+                    )
+                    measurement_scattering = self._resolve_scattering_summary(
+                        summary_df,
+                        q_col=q_col,
+                        scattering_angle_col=scattering_angle_col,
+                        refractive_index_col=refractive_index_col,
+                        default_refractive_index=default_refractive_index,
+                    )
+                    measurement_q_default = measurement_scattering["q"]
+                    measurement_refractive_index = measurement_scattering[
+                        "refractive_index"
+                    ]
 
                     q_measurements = []
                     rep_diffs = []
                     rep_gammas = []
 
                     for repetition, files in repetitions.items():
-                        rep_summary_df = _select_summary_frame(
+                        rep_summary_df = self._select_summary_frame(
                             {k: v for k, v in files.items()}, summary_file, allow_any=False
                         )
                         summary_source = rep_summary_df if rep_summary_df is not None else summary_df
-                        summary_row = _match_repetition_row(summary_source, repetition)
-                        q_current = _resolve_scattering_vector(summary_source, summary_row)
+                        summary_row = self._match_summary_repetition_row(
+                            summary_source, repetition
+                        )
+                        scattering = self._resolve_scattering_summary(
+                            summary_source,
+                            summary_row=summary_row,
+                            q_col=q_col,
+                            scattering_angle_col=scattering_angle_col,
+                            refractive_index_col=refractive_index_col,
+                            default_refractive_index=measurement_refractive_index,
+                        )
+                        q_current = scattering["q"]
                         if q_current is None:
                             q_current = measurement_q_default
                         if q_current is not None:
