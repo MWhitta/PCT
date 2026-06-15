@@ -1,0 +1,167 @@
+{
+  "title": "SWy-3 montmorillonite (1 %, 22 \u00b0C) \u2014 provisional polarized DLS analysis report",
+  "dataset_class": "multi-angle, single-temperature, polarized (VH/VV/3D)",
+  "conditions": [
+    {
+      "label": "22 \u00b0C",
+      "channel": "VV",
+      "T_K": 295.14588,
+      "eta_Pa_s": 0.0009549404352597201,
+      "R_h_nm": 202.63877583034215,
+      "rho": "not determined",
+      "cv_r2": 0.8598002016984925
+    }
+  ],
+  "assumptions": [
+    {
+      "assumption": "wavelength",
+      "value": "632.8 nm",
+      "source": "instrument default",
+      "affects": "q, D, R_h",
+      "sensitivity_checked": "no",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "refractive index",
+      "value": "1.33",
+      "source": "water, 22 \u00b0C",
+      "affects": "q",
+      "sensitivity_checked": "no",
+      "comment": "replace with measured"
+    },
+    {
+      "assumption": "viscosity",
+      "value": "0.95 mPa\u00b7s",
+      "source": "recorded export (water, 0.95 mPa\u00b7s)",
+      "affects": "R_h",
+      "sensitivity_checked": "yes",
+      "comment": "water at 22 \u00b0C \u2014 physically reasonable recorded value"
+    },
+    {
+      "assumption": "q source",
+      "value": "recalculated from angle",
+      "source": "pipeline",
+      "affects": "all q-dependent fits",
+      "sensitivity_checked": "no",
+      "comment": "vendor 'Scattering vector [1/nm]' column is mislabelled (values are 1/m); q recomputed from angle, reported in nm\u207b\u00b9"
+    },
+    {
+      "assumption": "static scale",
+      "value": "absolute (toluene-referenced) \u2014 assumed, unverified",
+      "source": "LSII toluene reference",
+      "affects": "SLS, R_g",
+      "sensitivity_checked": "no",
+      "comment": "toluene reference not confirmable from parsed export"
+    },
+    {
+      "assumption": "form factor",
+      "value": "homogeneous sphere (RGD)",
+      "source": "pipeline",
+      "affects": "PSD radii, \u03c1 check",
+      "sensitivity_checked": "yes",
+      "comment": "flag if \u03c1\u22600.78 or depolarization present"
+    },
+    {
+      "assumption": "cumulant g1_min",
+      "value": "0.6",
+      "source": "pipeline config",
+      "affects": "\u0393, PDI",
+      "sensitivity_checked": "yes",
+      "comment": "leading-decay window"
+    },
+    {
+      "assumption": "PSD radius grid",
+      "value": "8\u2013560 nm",
+      "source": "dynamic observability + static q guardrail",
+      "affects": "PSD peaks",
+      "sensitivity_checked": "yes",
+      "comment": "upper=min(dynamic 560 nm, static 685 nm, default 5000 nm); limiting=dynamic; tau_max=0.026 s, min field decay=0.223"
+    },
+    {
+      "assumption": "PSD basis",
+      "value": "24 B-spline control points",
+      "source": "pipeline config",
+      "affects": "PSD smoothness",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "regularization",
+      "value": "GCV-selected \u03bb=1.4e+00",
+      "source": "pipeline",
+      "affects": "PSD width",
+      "sensitivity_checked": "yes",
+      "comment": "interior minimum required"
+    },
+    {
+      "assumption": "baseline",
+      "value": "free per fit (CORENN); leading-decay cumulant",
+      "source": "pipeline config",
+      "affects": "\u0393, PSD",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    }
+  ],
+  "quality_gates": [
+    {
+      "gate": "q physically plausible / reproducible from angle",
+      "status": "PASS",
+      "note": "q recomputed from angle (vendor q column mislabeled 1/nm)"
+    },
+    {
+      "gate": "viscosity not a placeholder",
+      "status": "PASS",
+      "note": "recorded value used"
+    },
+    {
+      "gate": "fit bounds stated for every fit",
+      "status": "PASS",
+      "note": "cumulant g1_min=0.6; CORENN tau_max=0.026s, Rmax=560 nm (dynamic)"
+    },
+    {
+      "gate": "rejected curves/angles listed",
+      "status": "PASS",
+      "note": "0 rejected, tabulated"
+    },
+    {
+      "gate": "residual-structure test reported (not r\u00b2 alone)",
+      "status": "PASS",
+      "note": "runs test + lag-1 autocorrelation"
+    },
+    {
+      "gate": "headline R_h carries a bootstrap CI",
+      "status": "PASS",
+      "note": "replicate + angle/model bootstrap"
+    },
+    {
+      "gate": "hold-out cross-validation reported",
+      "status": "PASS",
+      "note": "leave-one-angle-out"
+    },
+    {
+      "gate": "CORENN converged + well-posed regularization",
+      "status": "PASS",
+      "note": "converged=True, GCV interior=True, \u03ba=6e+13"
+    },
+    {
+      "gate": "static scale confirmed absolute",
+      "status": "WAIVE",
+      "note": "toluene reference assumed (LSII default), not confirmable from parsed export"
+    },
+    {
+      "gate": "PSD basis (intensity/volume/number) stated",
+      "status": "PASS",
+      "note": "intensity-weighted primary, conversions noted"
+    },
+    {
+      "gate": "\u03c1 = R_g/R_h and particle model stated",
+      "status": "PASS",
+      "note": "not determined; Porod slope implies mass fractal / branched (D\u22482.4) \u2014 sphere PSD form factor flagged inconsistent"
+    },
+    {
+      "gate": "figure captions state raw vs derived",
+      "status": "PASS",
+      "note": "captions included"
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+\documentclass{article}
+
+\usepackage[english]{babel}
+
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=3cm,right=3cm,marginparwidth=1.75cm]{geometry}
+
+% Useful packages
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\title{Photon Correlation Tomography}
+\author{Michael L. Whittaker}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Derive 3D models of particle form factors from angle-resolved static and dynamic light scattering
+\end{abstract}
+
+\section{Introduction}
+\subsection{Electric Field and Intensity Correlations}
+Correlations among fluctuations of the (complex) scattered electric field, $E$, between time $t$ and lag time $\tau$ are given by
+
+\begin{equation}\label{E_correlation}
+\begin{split}
+    \langle E \left(t\right) E^* \left(t\right) E \left( t+\tau\right) E^*\left(t+\tau\right)\rangle_t = \\
+    \langle \left| E\left(t \right)\right|^2 \rangle_t \langle \left| E \left(t+\tau \right)\right|^2 \rangle_t + 
+    \left| \langle E \left(t \right) E^* \left(t+\tau \right) \rangle_t \right|^2 + 
+    \langle \delta \left| E \left(t\right)\right|^2 \delta\left| E \left(t+\tau \right)\right|^2\rangle_t
+\end{split}
+\end{equation}
+\\
+where $E^*$ is the conjugate of the complex electric field and the average $\langle \cdot \rangle$ is taken over all times $t$. Field fluctuations can be quantified with coherent optical scattering via the measured intensity, $I = \vert E \vert^2$. Thus, the intensity correlation is
+
+\begin{equation}\label{I_correlation}
+    \langle I(t)I(t + \tau) \rangle_t = 
+    \langle \left| E\left(t \right)\right|^2 \rangle_t \langle \left| E \left(t+\tau \right)\right|^2 \rangle_t + 
+    \left| \langle E \left(t \right) E^* \left(t+\tau \right) \rangle_t \right|^2 + 
+    \langle \delta \left| E \left(t\right)\right|^2 \delta\left| E \left(t+\tau \right)\right|^2\rangle_t
+\end{equation}
+\\
+The first term on the right of Eq. \ref{I_correlation} simplifies to
+
+\begin{equation}\label{E_correlation_term1}
+    \langle \left| E\left(t \right)\right|^2 \rangle_t \langle \left| E \left(t+\tau \right)\right|^2 \rangle_t = \langle I \rangle ^2
+\end{equation}
+\\
+Dividing Eq. \ref{I_correlation} by $\langle I \rangle ^2$ gives the intensity correlation function $g^{(2)}(\tau)$
+
+\begin{equation}\label{g2}
+    g^{(2)}(\tau) = \frac{\langle I(t)I(t + \tau) \rangle_t}{\langle I \rangle ^2}
+\end{equation}
+\\
+With the field correlation function $g^{(1)}(\tau)$ defined as
+\begin{equation}\label{g1}
+    g^{(1)}(\tau) = \frac{ \langle E(t)  E^*(t + \tau) \rangle_t } 
+    {\langle \vert E(t) \vert^2 \rangle_t}
+\end{equation}
+\\
+Eq. \ref{g2} can be written as
+
+\begin{equation}\label{g2_full}
+    g^{(2)}(\tau) - 1 = \big \vert g^{(1)}(\tau) \big \vert^2 + \frac{\langle \delta \left| E \left(t\right)\right|^2 \delta\left| E \left(t+\tau \right)\right|^2\rangle_t}{\langle I \rangle_t^2}
+\end{equation}
+\\
+We measure $g^{(2)}(\tau)$ and model $g^{(1)}(\tau)$. Residual intensity is attributed to higher-order correlations from the last term in Eq. \ref{g2_full}.
+
+
+\subsection{Intensity Correlation Measurement}
+A decoherence time $\Gamma$ is given by
+
+\begin{equation}\label{Gamma}
+    \Gamma = q^2 D
+\end{equation}
+\\
+where $D$ is the diffusivity and $q$ is the scattering vector
+
+\begin{equation}\label{q}
+    q = \frac{4 \pi n \sin (\theta/2)}{\lambda}
+\end{equation}
+\\
+where $n$ is the refractive index, $\theta$ is the scattering angle relative to the incident direction, and $\lambda$ is the wavelength.
+Diffusivity is given by the Einstein relation
+
+\begin{equation}\label{Einstein}
+    D = \mu k_B T
+\end{equation}
+where $k_B$ is the Boltzmann constant, $T$ is the absolute temperature, and $\mu$ is the mobility. Coherence decays exponentially as
+
+\begin{equation}\label{g1_mono}
+    g^{(1)}(q, \tau) = e^{-k_b T q^2 \mu \tau}
+\end{equation}
+\\
+$\beta \in [0,1]$ is the spatial coherence of the optical system. 
+
+Scatterers that produce a distribution of intensities, $I(q,R)$, which depend on their shape and size, decohere through a mixture of independent and correlated motion. The total intensity correlation function is the sum 
+
+\begin{equation}\label{g2_polydisperse}
+    g^{(2)}(\tau) - 1 = \beta \Big\vert \int I(q,R_i) e^{-k_b T q^2 \mu \tau} \Big\vert^2
+\end{equation}
+
+\begin{equation}\label{g2_log}
+    \frac{1}{2}\ln \left( \frac{g^{(2)}(\tau) - 1}{\beta} \right) = \ln \left(\Big\vert \sum_i I(q,R_i) e^{-k_b T q^2 \mu \tau} \Big\vert \right)
+\end{equation}
+
+
+\end{document}

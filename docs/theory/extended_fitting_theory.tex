@@ -1,0 +1,327 @@
+\documentclass[11pt]{article}
+
+\usepackage[english]{babel}
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=2.7cm,right=2.7cm,marginparwidth=1.6cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\newcommand{\g}[1]{g^{(#1)}}
+\newcommand{\vx}{\mathbf{x}}
+\newcommand{\vy}{\mathbf{y}}
+\newcommand{\rd}{\,\mathrm{d}}
+\newcommand{\kB}{k_{\mathrm B}}
+\newcommand{\Dt}{D_{\mathrm t}}
+\newcommand{\Dr}{D_{\mathrm r}}
+
+\title{Extended fitting methods for multi-angle, polarized photon correlation
+spectroscopy:\\ generalizing and relaxing the assumptions of CORENN}
+\author{Michael L. Whittaker}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The CORENN algorithm recovers a particle-size distribution (PSD) from a single
+dynamic-light-scattering (DLS) correlation curve by a non-linear,
+noise-weighted, Tikhonov-regularized, non-negativity-constrained inversion of
+the Siegert model. It is, however, built on four assumptions that are violated
+by the photon-correlation-tomography (PCT) measurements we wish to interpret:
+(i)~a single scattering angle, so that the intensity weighting of each size
+class is treated as $q$-independent; (ii)~optically isotropic, spherical
+scatterers undergoing purely \emph{translational} diffusion; (iii)~a correlation
+curve supplied entirely by the hardware correlator; and (iv)~a parametric noise
+model in place of measured replicate statistics. This document develops a
+unified inverse-problem framework that relaxes each assumption. We (1)~promote
+the unknown to a $q$-consistent distribution and fold the angular dependence of
+the scattering through the particle form factor $P(qR)$; (2)~add the
+\emph{rotational} degree of freedom probed by depolarized (VH) scattering,
+yielding a joint distribution over translational and rotational dynamics
+$f(\Dt,\Dr)$ from which size \emph{and} shape/anisotropy are recovered;
+(3)~extend the usable lag range by a graceful, uncertainty-weighted merge of the
+hardware correlogram with a software correlation of the photon count-rate trace;
+and (4)~replace the noise model with a replicate-calibrated, Schätzel-shaped
+weighting. The resulting estimator is a single regularized non-linear weighted
+least-squares problem over a non-negative distribution, of which standard CORENN
+is the spherical, single-angle, translational-only special case.
+\end{abstract}
+
+\section{Background: the CORENN forward model}
+The measured intensity correlation function (ICF) is related to the field
+correlation function (FCF) by the Siegert relation
+\begin{equation}\label{eq:siegert}
+  \g2(q,\tau) - 1 = \beta\,\bigl|\g1(q,\tau)\bigr|^2 ,
+\end{equation}
+with coherence factor $\beta\le 1$. For a dilute, ergodic suspension of
+spherical scatterers the FCF is the Laplace transform of the intensity-weighted
+distribution of decay rates,
+\begin{equation}\label{eq:g1_corenn}
+  \g1(q,\tau) = \int_0^\infty I(R)\,e^{-q^2 D(R)\,\tau}\rd R,
+  \qquad
+  D(R) = \frac{\kB T}{6\pi\eta R},
+  \qquad \int_0^\infty I(R)\rd R = 1 ,
+\end{equation}
+where $I(R)$ is the fraction of scattered intensity arising from particles of
+hydrodynamic radius $R$, $D(R)$ is the Stokes--Einstein translational diffusion
+coefficient, $\eta$ the solvent viscosity and $q = (4\pi n/\lambda_0)\sin(\theta/2)$
+the scattering-vector magnitude. CORENN discretizes $I(R)$ on a cubic B-spline
+basis $\{\Phi_j\}$,
+\begin{equation}\label{eq:bspline}
+  I(R) \approx \sum_{j=1}^{m} x_j\,\Phi_j(R),\qquad x_j\ge 0,
+\end{equation}
+so that, defining the kernel
+$K_{ij}=\int \Phi_j(R)\,e^{-q^2 D(R)\tau_i}\rd R$, the model reads
+$\g2(\tau_i)-1 = \beta\,(K\vx)_i^2$. The PSD is then the solution of the
+regularized non-linear weighted least-squares (NLWLS) problem
+\begin{equation}\label{eq:corenn}
+  \hat\vx(\lambda) = \arg\min_{\vx\ge 0}\;
+   \sum_i w_i^2\bigl[\,\hat g_i - \beta\,(K\vx)_i^2 - b\,\bigr]^2
+   \;+\; \lambda\,\|L\vx\|^2 ,
+\end{equation}
+with data weights $w_i = 1/\sigma_i$, a free baseline $b$, a curvature penalty
+$L$ (the second-derivative operator $\int [I''(R)]^2\rd R = \vx^\top L^\top L\,\vx$),
+and the regularization weight $\lambda$ chosen by generalized cross validation
+(GCV). The defining feature relative to CONTIN is that the \emph{square} in
+Eq.~\eqref{eq:corenn} is retained: one does not linearize by taking
+$\sqrt{(\hat g-1)/\beta}=K\vx$, which would distort the (heteroscedastic) noise.
+
+\paragraph{Assumptions to be relaxed.}
+Equations~\eqref{eq:siegert}--\eqref{eq:bspline} embed: a single $q$ with
+$q$-independent weighting $I(R)$ (\S\ref{sec:multiangle}); spherical, optically
+isotropic particles with only translational diffusion (\S\ref{sec:polarized});
+a hardware-supplied ICF over a fixed lag window (\S\ref{sec:hybrid}); and a
+parametric noise model for $w_i$ (\S\ref{sec:noise}).
+
+\section{Multi-angle inversion with explicit form-factor weighting}
+\label{sec:multiangle}
+The intensity scattered by a particle of radius $R$ at scattering vector $q$ is
+not $q$-independent: for a homogeneous sphere in the Rayleigh--Gans--Debye
+limit it scales as $R^6 P(qR)$, with the form factor
+\begin{equation}\label{eq:formfactor}
+  P(qR) = \left[\,\frac{3\bigl(\sin qR - qR\cos qR\bigr)}{(qR)^3}\,\right]^2 ,
+  \qquad P(qR)\to 1 \text{ as } qR\to 0 .
+\end{equation}
+Writing the number distribution as $N(R)$, the intensity weighting at angle $q$
+is $I(R,q) \propto N(R)\,R^6\,P(qR)$. The crucial observation is that the
+$R^6$ factor is $q$-independent, so we may define the \emph{angle-extrapolated
+intensity distribution}
+\begin{equation}
+  I_0(R) \;\equiv\; \frac{N(R)\,R^6}{\int N(R')\,R'^6\rd R'},
+\end{equation}
+i.e.\ the intensity PSD one would measure as $q\to 0$. The per-angle FCF is then
+\begin{equation}\label{eq:g1_multiangle}
+  \g1(q,\tau) = \frac{\displaystyle\int I_0(R)\,P(qR)\,e^{-q^2 D(R)\,\tau}\rd R}
+                     {\displaystyle\int I_0(R)\,P(qR)\rd R} ,
+\end{equation}
+where the denominator restores $\g1(q,0)=1$. This relaxes CORENN's implicit
+assumption that the same $I(R)$ applies at every angle: the only $q$-dependent
+re-weighting of a fixed $I_0(R)$ is the bounded, $O(1)$ factor $P(qR)$, which is
+numerically benign (unlike the $\sim$20-decade dynamic range of $R^6$ itself).
+
+Discretizing $I_0(R)=\sum_j x_j\Phi_j(R)$ gives, for each angle $q^{(a)}$, a
+kernel
+$K^{(a)}_{ij}=\int \Phi_j(R)\,P(q^{(a)}R)\,e^{-(q^{(a)})^2 D(R)\tau_i}\rd R$ and a
+model $\g2_a(\tau_i)-1 = A_a\,(K^{(a)}\vx)_i^2$, with a per-angle amplitude
+$A_a$ (coherence factor divided by the squared normalization) that can be
+profiled out in closed form,
+\begin{equation}
+  A_a(\vx) =
+  \frac{\sum_i w_{a,i}^2\,\hat g_{a,i}\,(K^{(a)}\vx)_i^2}
+       {\sum_i w_{a,i}^2\,(K^{(a)}\vx)_i^4}.
+\end{equation}
+The joint estimator solves a single non-negative, regularized NLWLS over the
+$q$-independent coefficients $\vx$ using \emph{all} angles simultaneously,
+\begin{equation}\label{eq:joint_multiangle}
+  \hat\vx(\lambda) = \arg\min_{\vx\ge 0}\;
+  \sum_{a}\sum_i w_{a,i}^2\bigl[\hat g_{a,i} - A_a(\vx)\,(K^{(a)}\vx)_i^2\bigr]^2
+  + \lambda\,\|L\vx\|^2 .
+\end{equation}
+Because the form factor develops minima and lobes once $qR\gtrsim\pi$, the
+angular data carry information about the \emph{large}-particle tail that a
+single back-scattering angle cannot resolve; conversely the small-particle
+mode, whose intensity weight is suppressed by $R^6$, remains weakly constrained
+(an intrinsic DLS limitation, not a defect of the inversion). The number and
+volume distributions follow from $N(R)\propto I_0(R)/R^6$ and
+$V(R)\propto I_0(R)/R^3$.
+
+\section{Polarized DLS: adding rotational diffusion}
+\label{sec:polarized}
+For optically anisotropic or non-spherical particles the scattered field has a
+depolarized component, and the dynamics carry information about rotation.
+Decompose the scattering into polarized (VV; incident and detected
+polarizations both vertical) and depolarized (VH; crossed) channels. To leading
+order in the optical anisotropy, the field correlation functions are
+\begin{align}
+  \g1_{\mathrm{VV}}(q,\tau)
+    &= \int f(\Dt)\,e^{-q^2 \Dt\,\tau}\rd\Dt
+       \;+\; \tfrac{4}{3}\,\delta^2\!\!\int f(\Dt,\Dr)\,
+       e^{-(q^2\Dt + 6\Dr)\tau}\rd\Dt\rd\Dr ,
+       \label{eq:g1VV}\\[2pt]
+  \g1_{\mathrm{VH}}(q,\tau)
+    &= \int f(\Dt,\Dr)\,e^{-(q^2\Dt + 6\Dr)\,\tau}\rd\Dt\rd\Dr ,
+       \label{eq:g1VH}
+\end{align}
+where $\Dt$ and $\Dr$ are the translational and rotational diffusion
+coefficients, $\delta$ is the (small) optical-anisotropy factor, and
+$f(\Dt,\Dr)$ is the joint distribution of dynamics weighted by scattered
+intensity. The depolarized channel \eqref{eq:g1VH} decays with the
+\emph{enhanced} rate $\Gamma_{\mathrm{VH}} = q^2\Dt + 6\Dr$: at low $q$ it is
+dominated by the $q$-independent rotational term $6\Dr$, providing direct access
+to rotation. For spheres $\delta = 0$ and the VH channel vanishes, recovering
+the CORENN picture; the polarized framework is therefore a strict generalization.
+
+\paragraph{From dynamics to geometry.}
+The two diffusion coefficients constrain two geometric parameters. For a
+spherical equivalent, $\Dt = \kB T/6\pi\eta R_{\mathrm t}$ and
+$\Dr = \kB T/8\pi\eta R_{\mathrm r}^3$ define translational and rotational
+hydrodynamic radii; their ratio
+\begin{equation}
+  \rho \;\equiv\; \frac{\Dr}{\Dt}\,R_{\mathrm t}^2
+  \;=\; \frac{3}{4}\left(\frac{R_{\mathrm t}}{R_{\mathrm r}}\right)^{\!3}
+\end{equation}
+is a dimensionless shape descriptor (unity for a sphere, $>1$ for elongated
+particles). More generally, for an axisymmetric ellipsoid of semi-axes $(a,b)$
+the Perrin friction factors map $(\Dt,\Dr)$ to the aspect ratio $p=a/b$ and
+volume, so the recovered $f(\Dt,\Dr)$ becomes a joint distribution over size and
+shape.
+
+\paragraph{Joint VV/VH multi-angle inverse problem.}
+Combining \S\ref{sec:multiangle} and the present section, the unknown is a
+non-negative joint distribution $f(R,\,s)$ over hydrodynamic size $R$ and a
+shape coordinate $s$ (e.g.\ aspect ratio), discretized on a tensor B-spline
+basis $f(R,s)=\sum_{jk} x_{jk}\,\Phi_j(R)\,\Psi_k(s)$, $x_{jk}\ge 0$. Each
+(angle, polarization) channel $c=(q^{(a)},\mathrm{pol})$ contributes a kernel
+\begin{equation}\label{eq:joint_kernel}
+  K^{(c)}_{i,jk} = \int\!\!\int W_c(R,s,q^{(a)})\,\Phi_j(R)\,\Psi_k(s)\,
+  \exp\!\bigl[-\Gamma_c(R,s,q^{(a)})\,\tau_i\bigr]\rd R\rd s ,
+\end{equation}
+with channel-specific weight $W_c$ (intensity $\times$ form factor $\times$
+polarization selection rule) and decay rate
+\begin{equation}
+  \Gamma_c =
+  \begin{cases}
+    q^2\,\Dt(R) & \text{VV, leading order},\\[2pt]
+    q^2\,\Dt(R) + 6\,\Dr(R,s) & \text{VH}.
+  \end{cases}
+\end{equation}
+All channels are inverted jointly,
+\begin{equation}\label{eq:joint_full}
+  \hat\vx(\lambda) = \arg\min_{\vx\ge 0}
+  \sum_{c}\sum_i w_{c,i}^2\bigl[\hat g_{c,i} - A_c(\vx)\,(K^{(c)}\vx)_i^2\bigr]^2
+  + \lambda\,\vx^\top \Omega\,\vx ,
+\end{equation}
+where $\Omega$ is a separable curvature penalty enforcing smoothness in both $R$
+and $s$. Equation~\eqref{eq:joint_full} reduces to standard CORENN
+\eqref{eq:corenn} for a single VV angle and $s$-independent (spherical)
+kinematics, and to the multi-angle problem \eqref{eq:joint_multiangle} when the
+VH channels and shape coordinate are dropped.
+
+\section{Hybrid hardware/software correlation for an extended lag range}
+\label{sec:hybrid}
+Resolving both the fast rotational dynamics of \S\ref{sec:polarized} and the
+slow dynamics of large aggregates requires a correlation function spanning many
+more decades in $\tau$ than any single estimator provides. The hardware
+correlator is accurate from $\sim$ns to the end of the main relaxation but, at
+long lags, suffers triangular-averaging distortion, few independent
+decorrelation windows, and irreproducible slow ``artifacts.'' Meanwhile the
+instrument streams a photon count-rate trace $n(t)$ binned every few
+milliseconds for the whole acquisition. Software-correlating that trace --- and
+ensemble-averaging across replicates --- yields a superior estimate of the slow
+dynamics. We use the symmetric-normalization, cross-correlation estimator
+\begin{equation}\label{eq:soft_corr}
+  \g2_{\mathrm{sw}}(\tau_k) =
+  \frac{\bigl\langle n_A(t_i)\,n_B(t_i+\tau_k)\bigr\rangle_i}
+       {\bigl\langle n_A(t_i)\bigr\rangle_i\,\bigl\langle n_B(t_i+\tau_k)\bigr\rangle_i},
+\end{equation}
+with the direct and delayed monitor averages taken over the same overlapping
+segment (suppressing drift bias) and channels $A\times B$ cross-correlated to
+remove detector afterpulsing and dead-time.
+
+\paragraph{Graceful, uncertainty-weighted merge.}
+Rather than hard-truncating the hardware curve at an arbitrary lag, the two
+estimators are blended by inverse-variance weighting on a common log-lag grid:
+\begin{equation}\label{eq:merge}
+  \g2_{\mathrm{merge}}(\tau) - 1 =
+  \frac{\sigma_{\mathrm{hw}}^{-2}\,[\g2_{\mathrm{hw}}-1]
+        + \sigma_{\mathrm{sw}}^{-2}\,[\g2_{\mathrm{sw}}-1]}
+       {\sigma_{\mathrm{hw}}^{-2}+\sigma_{\mathrm{sw}}^{-2}},
+  \qquad
+  \sigma_{\mathrm{merge}}^{-2}=\sigma_{\mathrm{hw}}^{-2}+\sigma_{\mathrm{sw}}^{-2}.
+\end{equation}
+The software amplitude is first matched to the hardware over a narrow window
+straddling the handoff (both measure $\beta\,|\g1|^2$ for the same field, but
+with different coherence factors). The expected uncertainties encode where each
+estimator is trustworthy:
+\begin{align}
+  \sigma_{\mathrm{hw}}(\tau)
+    &= \sigma^{\mathrm{base}}_{\mathrm{hw}}(\tau)\,
+       \Bigl[1 + (\tau/\tau_{\mathrm{distort}})^{p}\Bigr], \\
+  \sigma_{\mathrm{sw}}(\tau)
+    &= \frac{\sigma^{\mathrm{base}}_{\mathrm{sw}}(\tau)}{\sqrt{N_{\mathrm{rep}}}}\,
+       \Bigl[1 + (\,m\,\Delta t_{\mathrm{bin}}/\tau)^{p}\Bigr],
+\end{align}
+so the hardware is down-weighted only beyond the distortion lag
+$\tau_{\mathrm{distort}}$, while the software is down-weighted within a few bin
+times $m\,\Delta t_{\mathrm{bin}}$ of its shortest lag. The crossover then falls
+naturally just after the main decay, and $\sigma_{\mathrm{merge}}(\tau)$ is
+exactly the weight $w_i=1/\sigma_i$ required by the inversions of
+\S\S\ref{sec:multiangle}--\ref{sec:polarized}.
+
+\section{Noise model: replicate-calibrated Schätzel weighting}
+\label{sec:noise}
+The statistical noise on the ICF estimator grows at long lag because the number
+of independent decorrelation windows in a run of duration $T$ falls as
+$M(\tau)\sim T/\tau$ (Schätzel 1990; Biganzoli \& Ferri 2018). A robust,
+numerically stable model for the variance of $\g2-1$ is
+\begin{equation}\label{eq:schatzel}
+  \sigma^2(\tau) = \sigma_{\mathrm{floor}}^2
+  + g_{\mathrm a}\,\frac{\bigl[1+\beta\,\g1(\tau)^2\bigr]^2}{M(\tau)},
+  \qquad M(\tau)=\max\!\bigl(T/\tau,\,1\bigr),
+\end{equation}
+where $\sigma_{\mathrm{floor}}$ is the short-lag (shot/quantization) level and
+$g_{\mathrm a}=O(1)$ a self-beating gain. When replicate curves are available
+(the PCT data provide five per measurement), we take the \emph{shape} of
+$\sigma(\tau)$ from Eq.~\eqref{eq:schatzel} but calibrate its absolute level to
+the measured short-lag replicate scatter, and never under-weight a lag the
+replicates flag as noisy: $\sigma \leftarrow \max(\sigma_{\text{model}},
+\sigma_{\text{empirical}})$. This combines the long-lag growth that the
+hardware artifacts demand with the empirical fidelity of direct replicate
+statistics, and is what allows the inversion to ignore the long-lag noise floor
+rather than fit it with a spurious slow population.
+
+\section{Summary of the generalization}
+Table~\ref{tab:generalization} situates the four extensions relative to standard
+CORENN. Each is implemented in the accompanying \texttt{corenn.py} (inversion,
+form-factor multi-angle, replicate/Schätzel weighting, uncertainty bands) and
+\texttt{hybrid\_correlator.py} (software correlation and graceful merge); the
+polarized joint inversion \eqref{eq:joint_full} is the natural next step within
+the same NLWLS machinery.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Assumption in CORENN & Generalization & Mechanism \\
+\midrule
+Single angle, $q$-indep.\ $I(R)$ & Multi-angle $I_0(R)$ & form factor $P(qR)$, Eq.~\eqref{eq:joint_multiangle} \\
+Spherical, isotropic, transl.\ only & Rotational dynamics $f(\Dt,\Dr)$ & VV/VH channels, Eqs.~\eqref{eq:g1VV}--\eqref{eq:joint_full} \\
+Hardware ICF, fixed lag window & Hybrid hardware+software & inverse-variance merge, Eq.~\eqref{eq:merge} \\
+Parametric noise model & Replicate-calibrated weights & Schätzel shape, Eq.~\eqref{eq:schatzel} \\
+\bottomrule
+\end{tabular}
+\caption{Each row relaxes one CORENN assumption while preserving the
+non-negative, regularized, non-linear weighted least-squares structure; CORENN
+is the common special case.}
+\label{tab:generalization}
+\end{table}
+
+\paragraph{Relation to existing PCT theory.}
+This document extends the basic FCF/ICF and Siegert treatment of
+\texttt{dls\_theory.tex}; Eqs.~\eqref{eq:siegert}--\eqref{eq:g1_corenn} here are
+the polydisperse generalization of its Eq.~(13), and \S\ref{sec:polarized}
+supplies the rotational content absent from the spherical, translational-only
+model used there.
+
+\end{document}

@@ -1,0 +1,167 @@
+{
+  "title": "JM_F0 (25 \u00b0C) \u2014 provisional polarized DLS analysis report",
+  "dataset_class": "multi-angle, single-temperature, polarized (VH/VV/3D)",
+  "conditions": [
+    {
+      "label": "25 \u00b0C",
+      "channel": "VV",
+      "T_K": 298.15421,
+      "eta_Pa_s": 0.000890384121912966,
+      "R_h_nm": 938.470754101332,
+      "rho": "not determined",
+      "cv_r2": 0.1350491933350907
+    }
+  ],
+  "assumptions": [
+    {
+      "assumption": "wavelength",
+      "value": "632.8 nm",
+      "source": "instrument default",
+      "affects": "q, D, R_h",
+      "sensitivity_checked": "no",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "refractive index",
+      "value": "1.33",
+      "source": "assumed aqueous",
+      "affects": "q",
+      "sensitivity_checked": "no",
+      "comment": "replace with measured"
+    },
+    {
+      "assumption": "viscosity",
+      "value": "0.89 mPa\u00b7s",
+      "source": "recorded export / fallback 0.89 mPa\u00b7s",
+      "affects": "R_h",
+      "sensitivity_checked": "yes",
+      "comment": "verify solvent and temperature"
+    },
+    {
+      "assumption": "q source",
+      "value": "recalculated from angle",
+      "source": "pipeline",
+      "affects": "all q-dependent fits",
+      "sensitivity_checked": "no",
+      "comment": "vendor 'Scattering vector [1/nm]' column is mislabelled (values are 1/m); q recomputed from angle, reported in nm\u207b\u00b9"
+    },
+    {
+      "assumption": "static scale",
+      "value": "absolute (toluene-referenced) \u2014 assumed, unverified",
+      "source": "LSII toluene reference",
+      "affects": "SLS, R_g",
+      "sensitivity_checked": "no",
+      "comment": "toluene reference not confirmable from parsed export"
+    },
+    {
+      "assumption": "form factor",
+      "value": "homogeneous sphere (RGD)",
+      "source": "pipeline",
+      "affects": "PSD radii, \u03c1 check",
+      "sensitivity_checked": "yes",
+      "comment": "flag if \u03c1\u22600.78 or depolarization present"
+    },
+    {
+      "assumption": "cumulant g1_min",
+      "value": "0.6",
+      "source": "pipeline config",
+      "affects": "\u0393, PDI",
+      "sensitivity_checked": "yes",
+      "comment": "leading-decay window"
+    },
+    {
+      "assumption": "PSD radius grid",
+      "value": "8\u2013238 nm",
+      "source": "dynamic observability + static q guardrail",
+      "affects": "PSD peaks",
+      "sensitivity_checked": "yes",
+      "comment": "upper=min(dynamic 20108 nm, static 238 nm, default 5000 nm); limiting=static_q; tau_max=0.1 s, min field decay=0.223"
+    },
+    {
+      "assumption": "PSD basis",
+      "value": "24 B-spline control points",
+      "source": "pipeline config",
+      "affects": "PSD smoothness",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "regularization",
+      "value": "GCV-selected \u03bb=1.0e+03",
+      "source": "pipeline",
+      "affects": "PSD width",
+      "sensitivity_checked": "yes",
+      "comment": "interior minimum required"
+    },
+    {
+      "assumption": "baseline",
+      "value": "free per fit (CORENN); leading-decay cumulant",
+      "source": "pipeline config",
+      "affects": "\u0393, PSD",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    }
+  ],
+  "quality_gates": [
+    {
+      "gate": "q physically plausible / reproducible from angle",
+      "status": "PASS",
+      "note": "q recomputed from angle (vendor q column mislabeled 1/nm)"
+    },
+    {
+      "gate": "viscosity not a placeholder",
+      "status": "PASS",
+      "note": "recorded value used"
+    },
+    {
+      "gate": "fit bounds stated for every fit",
+      "status": "PASS",
+      "note": "cumulant g1_min=0.6; CORENN tau_max=0.1s, Rmax=238 nm (static_q)"
+    },
+    {
+      "gate": "rejected curves/angles listed",
+      "status": "PASS",
+      "note": "15 rejected, tabulated"
+    },
+    {
+      "gate": "residual-structure test reported (not r\u00b2 alone)",
+      "status": "PASS",
+      "note": "runs test + lag-1 autocorrelation"
+    },
+    {
+      "gate": "headline R_h carries a bootstrap CI",
+      "status": "PASS",
+      "note": "angle/model bootstrap (no angle has \u22652 replicates, so no repeatability CI)"
+    },
+    {
+      "gate": "hold-out cross-validation reported",
+      "status": "PASS",
+      "note": "leave-one-angle-out"
+    },
+    {
+      "gate": "CORENN converged + well-posed regularization",
+      "status": "WAIVE",
+      "note": "converged=True, GCV interior=False, \u03ba=2e+12"
+    },
+    {
+      "gate": "static scale confirmed absolute",
+      "status": "WAIVE",
+      "note": "toluene reference assumed (LSII default), not confirmable from parsed export"
+    },
+    {
+      "gate": "PSD basis (intensity/volume/number) stated",
+      "status": "PASS",
+      "note": "intensity-weighted primary, conversions noted"
+    },
+    {
+      "gate": "\u03c1 = R_g/R_h and particle model stated",
+      "status": "PASS",
+      "note": "not determined; sphere form factor assumed"
+    },
+    {
+      "gate": "figure captions state raw vs derived",
+      "status": "PASS",
+      "note": "captions included"
+    }
+  ]
+}

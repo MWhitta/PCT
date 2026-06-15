@@ -1,0 +1,226 @@
+{
+  "title": "SISV_1% polymer (THF/DOX 7:3) \u2014 provisional DLS analysis report",
+  "dataset_class": "multi-angle, multi-temperature, polarized (VH/VV/3D)",
+  "conditions": [
+    {
+      "label": "11.5 \u00b0C",
+      "channel": "VV",
+      "T_K": 284.64994,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 139.28443601429305,
+      "rho": "not determined",
+      "cv_r2": 0.9997295092029113
+    },
+    {
+      "label": "15.0 \u00b0C",
+      "channel": "VV",
+      "T_K": 288.16124,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 131.9359249273969,
+      "rho": "not determined",
+      "cv_r2": 0.9997588062873963
+    },
+    {
+      "label": "18.5 \u00b0C",
+      "channel": "VV",
+      "T_K": 291.65356,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 124.92391258605059,
+      "rho": "not determined",
+      "cv_r2": 0.9997205058919968
+    },
+    {
+      "label": "22.0 \u00b0C",
+      "channel": "VV",
+      "T_K": 295.14588,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 118.11678789493413,
+      "rho": "not determined",
+      "cv_r2": 0.9998606272722241
+    },
+    {
+      "label": "25.5 \u00b0C",
+      "channel": "VV",
+      "T_K": 298.64769,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 112.5080180619828,
+      "rho": "not determined",
+      "cv_r2": 0.9997149166637794
+    },
+    {
+      "label": "28.0 \u00b0C",
+      "channel": "VV",
+      "T_K": 301.15305,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 108.26654739016814,
+      "rho": "not determined",
+      "cv_r2": 0.9997703912679282
+    },
+    {
+      "label": "30.5 \u00b0C",
+      "channel": "VV",
+      "T_K": 303.64892,
+      "eta_Pa_s": 0.00047,
+      "R_h_nm": 106.26833445008579,
+      "rho": "not determined",
+      "cv_r2": 0.9996857781079288
+    }
+  ],
+  "assumptions": [
+    {
+      "assumption": "wavelength",
+      "value": "632.8 nm",
+      "source": "instrument default",
+      "affects": "q, D, R_h",
+      "sensitivity_checked": "no",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "refractive index",
+      "value": "1.4",
+      "source": "THF/dioxane 7:3, assumed",
+      "affects": "q",
+      "sensitivity_checked": "no",
+      "comment": "replace with measured"
+    },
+    {
+      "assumption": "viscosity",
+      "value": "0.47, 0.47, 0.47, 0.47, 0.47, 0.47, 0.47 mPa\u00b7s",
+      "source": "recorded export (fixed 0.47 mPa\u00b7s)",
+      "affects": "R_h",
+      "sensitivity_checked": "yes",
+      "comment": "fixed at all temperatures \u2014 placeholder; THF thins on heating"
+    },
+    {
+      "assumption": "q source",
+      "value": "recalculated from angle",
+      "source": "pipeline",
+      "affects": "all q-dependent fits",
+      "sensitivity_checked": "no",
+      "comment": "vendor 'Scattering vector [1/nm]' column is mislabelled (values are 1/m); q recomputed from angle, reported in nm\u207b\u00b9"
+    },
+    {
+      "assumption": "static scale",
+      "value": "absolute (toluene-referenced) \u2014 assumed, unverified",
+      "source": "LSII toluene reference",
+      "affects": "SLS, R_g",
+      "sensitivity_checked": "no",
+      "comment": "toluene reference not confirmable from parsed export"
+    },
+    {
+      "assumption": "form factor",
+      "value": "homogeneous sphere (RGD)",
+      "source": "pipeline",
+      "affects": "PSD radii, \u03c1 check",
+      "sensitivity_checked": "yes",
+      "comment": "flag if \u03c1\u22600.78 or depolarization present"
+    },
+    {
+      "assumption": "cumulant g1_min",
+      "value": "0.6",
+      "source": "pipeline config",
+      "affects": "\u0393, PDI",
+      "sensitivity_checked": "yes",
+      "comment": "leading-decay window"
+    },
+    {
+      "assumption": "PSD radius grid",
+      "value": "8\u2013217 nm",
+      "source": "dynamic observability + static q guardrail",
+      "affects": "PSD peaks",
+      "sensitivity_checked": "yes",
+      "comment": "upper=min(dynamic 217 nm, static 861 nm, default 5000 nm); limiting=dynamic; tau_max=0.0082 s, min field decay=0.223"
+    },
+    {
+      "assumption": "PSD basis",
+      "value": "24 B-spline control points",
+      "source": "pipeline config",
+      "affects": "PSD smoothness",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    },
+    {
+      "assumption": "regularization",
+      "value": "GCV-selected \u03bb=1.1e+02",
+      "source": "pipeline",
+      "affects": "PSD width",
+      "sensitivity_checked": "yes",
+      "comment": "interior minimum required"
+    },
+    {
+      "assumption": "baseline",
+      "value": "free per fit (CORENN); leading-decay cumulant",
+      "source": "pipeline config",
+      "affects": "\u0393, PSD",
+      "sensitivity_checked": "yes",
+      "comment": "\u2014"
+    }
+  ],
+  "quality_gates": [
+    {
+      "gate": "q physically plausible / reproducible from angle",
+      "status": "PASS",
+      "note": "q recomputed from angle (vendor q column mislabeled 1/nm)"
+    },
+    {
+      "gate": "viscosity not a placeholder",
+      "status": "WAIVE",
+      "note": "same \u03b7 recorded across temperatures \u2014 flagged placeholder"
+    },
+    {
+      "gate": "fit bounds stated for every fit",
+      "status": "PASS",
+      "note": "cumulant g1_min=0.6; CORENN tau_max=0.0082s, Rmax=217 nm (dynamic)"
+    },
+    {
+      "gate": "rejected curves/angles listed",
+      "status": "PASS",
+      "note": "0 rejected, tabulated"
+    },
+    {
+      "gate": "residual-structure test reported (not r\u00b2 alone)",
+      "status": "PASS",
+      "note": "runs test + lag-1 autocorrelation"
+    },
+    {
+      "gate": "headline R_h carries a bootstrap CI",
+      "status": "PASS",
+      "note": "replicate + angle/model bootstrap"
+    },
+    {
+      "gate": "hold-out cross-validation reported",
+      "status": "PASS",
+      "note": "leave-one-angle-out"
+    },
+    {
+      "gate": "CORENN converged + well-posed regularization",
+      "status": "PASS",
+      "note": "converged=True, GCV interior=True, \u03ba=5e+11"
+    },
+    {
+      "gate": "static scale confirmed absolute",
+      "status": "WAIVE",
+      "note": "toluene reference assumed (LSII default), not confirmable from parsed export"
+    },
+    {
+      "gate": "PSD basis (intensity/volume/number) stated",
+      "status": "PASS",
+      "note": "intensity-weighted primary, conversions noted"
+    },
+    {
+      "gate": "\u03c1 = R_g/R_h and particle model stated",
+      "status": "PASS",
+      "note": "not determined; sphere form factor assumed"
+    },
+    {
+      "gate": "multi-temperature size/viscosity ambiguity addressed",
+      "status": "PASS",
+      "note": "same-sample joint-temperature solve reported"
+    },
+    {
+      "gate": "figure captions state raw vs derived",
+      "status": "PASS",
+      "note": "captions included"
+    }
+  ]
+}
